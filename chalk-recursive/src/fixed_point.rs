@@ -1,12 +1,15 @@
+use rustc_hash::FxHashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use tracing::debug;
 use tracing::{info, instrument};
 
 mod cache;
-mod search_graph;
-mod stack;
+pub mod search_graph;
+pub mod stack;
 
+use crate::proof_tree::ProofTree;
+use crate::solve::TracedFallible;
 pub use cache::Cache;
 use search_graph::{DepthFirstNumber, SearchGraph};
 use stack::{Stack, StackDepth};
@@ -109,6 +112,7 @@ where
     ) -> V {
         debug!("solve_root_goal(canonical_goal={:?})", canonical_goal);
         assert!(self.stack.is_empty());
+
         let minimums = &mut Minimums::new();
         self.solve_goal(canonical_goal, minimums, solver_stuff, should_continue)
     }
@@ -125,12 +129,13 @@ where
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> V {
         // First check the cache.
-        if let Some(cache) = &self.cache {
-            if let Some(value) = cache.get(goal) {
-                debug!("solve_reduced_goal: cache hit, value={:?}", value);
-                return value;
-            }
-        }
+        // FIXME(gavinleroy): disable cache for now ...
+        // if let Some(cache) = &self.cache {
+        //     if let Some(value) = cache.get(goal) {
+        //         debug!("solve_reduced_goal: cache hit, value={:?}", value);
+        //         return value;
+        //     }
+        // }
 
         // Next, check if the goal is in the search tree already.
         if let Some(dfn) = self.search_graph.lookup(goal) {
@@ -153,6 +158,7 @@ where
                 "solve_goal: cycle detected, previous solution {:?}",
                 previous_solution,
             );
+
             previous_solution
         } else {
             // Otherwise, push the goal onto the stack and create a table.

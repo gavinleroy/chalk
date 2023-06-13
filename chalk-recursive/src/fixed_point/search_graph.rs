@@ -11,7 +11,8 @@ use tracing::{debug, instrument};
 
 /// The "search graph" stores in-progress goals that are still
 /// being solved.
-pub(super) struct SearchGraph<K, V>
+#[derive(Clone, Debug)]
+pub struct SearchGraph<K, V>
 where
     K: Hash + Eq + Debug + Clone,
     V: Debug + Clone,
@@ -21,11 +22,12 @@ where
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub(super) struct DepthFirstNumber {
+pub struct DepthFirstNumber {
     index: usize,
 }
 
-pub(super) struct Node<K, V> {
+#[derive(Clone, Debug)]
+pub struct Node<K, V> {
     pub(crate) goal: K,
 
     pub(crate) solution: V,

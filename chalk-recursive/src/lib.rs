@@ -5,6 +5,7 @@ pub type UCanonicalGoal<I> = UCanonical<InEnvironment<Goal<I>>>;
 mod combine;
 mod fixed_point;
 mod fulfill;
+pub mod proof_tree;
 mod recursive;
 pub mod solve;
 

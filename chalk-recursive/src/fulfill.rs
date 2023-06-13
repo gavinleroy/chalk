@@ -1,5 +1,7 @@
 use crate::fixed_point::Minimums;
-use crate::solve::SolveDatabase;
+use crate::proof_tree::{ProofTree, ProofTreeBuilder};
+use crate::solve::{SolveDatabase, TracedFallible};
+use crate::UCanonicalGoal;
 use chalk_ir::cast::Cast;
 use chalk_ir::fold::TypeFoldable;
 use chalk_ir::interner::{HasInterner, Interner};
@@ -18,6 +20,11 @@ use chalk_solve::{Guidance, Solution};
 use rustc_hash::FxHashSet;
 use std::fmt::Debug;
 use tracing::{debug, instrument};
+
+pub struct TracedOutput<T, I: Interner> {
+    pub builder: ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+    pub result: T,
+}
 
 enum Outcome {
     Complete,
@@ -121,6 +128,9 @@ pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
     subst: Substitution<I>,
     infer: InferenceTable<I>,
 
+    /// Proof trace of actions taken to solve the root goal
+    trace: ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+
     /// The remaining goals to prove or refute
     obligations: Vec<Obligation<I>>,
 
@@ -134,6 +144,11 @@ pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
     cannot_prove: bool,
 }
 
+// FIXME: Previously we returned a `Fallible` type which simply uses the NoSolution
+//        variant as the error, here we just return the attempted proof tree, and
+//        later can use NoSolution as the Fallible<Solution<I>> type.
+type TracedCreate<T, I> = Result<T, ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>>;
+
 impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     #[instrument(level = "debug", skip(solver, infer))]
     pub(super) fn new_with_clause(
@@ -142,10 +157,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         subst: Substitution<I>,
         canonical_goal: InEnvironment<DomainGoal<I>>,
         clause: &Binders<ProgramClauseImplication<I>>,
-    ) -> Fallible<Self> {
+    ) -> TracedCreate<Self, I> {
         let mut fulfill = Fulfill {
             solver,
             infer,
+            trace: ProofTreeBuilder::new(),
             subst,
             obligations: vec![],
             constraints: FxHashSet::default(),
@@ -174,13 +190,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             &canonical_goal.goal,
             &consequence,
         ) {
-            return Err(e);
+            return Err(fulfill.trace);
         }
 
         // if so, toss in all of its premises
         for condition in conditions.as_slice(fulfill.solver.interner()) {
             if let Err(e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
-                return Err(e);
+                return Err(fulfill.trace);
             }
         }
 
@@ -192,10 +208,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         infer: InferenceTable<I>,
         subst: Substitution<I>,
         canonical_goal: InEnvironment<Goal<I>>,
-    ) -> Fallible<Self> {
+    ) -> TracedCreate<Self, I> {
         let mut fulfill = Fulfill {
             solver,
             infer,
+            trace: ProofTreeBuilder::new(),
             subst,
             obligations: vec![],
             constraints: FxHashSet::default(),
@@ -204,7 +221,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         if let Err(e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
         {
-            return Err(e);
+            return Err(fulfill.trace);
         }
 
         Ok(fulfill)
@@ -255,7 +272,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     where
         T: ?Sized + Zip<I> + Debug,
     {
-        let goals = unify(
+        let goals = match unify(
             &mut self.infer,
             self.solver.interner(),
             self.solver.db().unification_database(),
@@ -263,7 +280,17 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             variance,
             a,
             b,
-        )?;
+        ) {
+            Ok(goals) => goals,
+            Err(e) => {
+                // TODO(gavin): save the values that we wanted to unify
+                //     and report as an obligation failure.
+                // self.trace.unification_fail(a, b);
+
+                return Err(e);
+            }
+        };
+
         debug!("unify({:?}, {:?}) succeeded", a, b);
         debug!("unify: goals={:?}", goals);
         for goal in goals {
@@ -352,13 +379,15 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let interner = self.solver.interner();
         let (quantified, free_vars) = canonicalize(&mut self.infer, interner, wc);
         let (quantified, universes) = u_canonicalize(&mut self.infer, interner, &quantified);
-        let result = self
-            .solver
-            .solve_goal(quantified, minimums, should_continue);
-        Ok(PositiveSolution {
+        let TracedFallible { solution, trace } =
+            self.solver
+                .solve_goal(quantified, minimums, should_continue);
+
+        self.trace.add_subtree(trace);
+        solution.map(|solution| PositiveSolution {
             free_vars,
             universes,
-            solution: result?,
+            solution,
         })
     }
 
@@ -383,10 +412,12 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let (quantified, _) =
             u_canonicalize(&mut self.infer, self.solver.interner(), &canonicalized);
         let mut minimums = Minimums::new(); // FIXME -- minimums here seems wrong
-        if let Ok(solution) = self
-            .solver
-            .solve_goal(quantified, &mut minimums, should_continue)
-        {
+        let TracedFallible { solution, trace } =
+            self.solver
+                .solve_goal(quantified, &mut minimums, should_continue);
+
+        self.trace.add_subtree(trace);
+        if let Ok(solution) = solution {
             if solution.is_unique() {
                 Err(NoSolution)
             } else {
@@ -532,15 +563,24 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         mut self,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> TracedOutput<Fallible<Solution<I>>, I> {
+        macro_rules! consume_trace {
+            ($this:tt, $sol:expr) => {
+                TracedOutput {
+                    result: $sol,
+                    builder: $this.trace,
+                }
+            };
+        }
+
         let outcome = match self.fulfill(minimums, should_continue.clone()) {
             Ok(o) => o,
-            Err(e) => return Err(e),
+            Err(e) => return consume_trace!(self, Err(e)),
         };
 
         if self.cannot_prove {
             debug!("Goal cannot be proven (cannot_prove = true), returning ambiguous");
-            return Ok(Solution::Ambig(Guidance::Unknown));
+            return consume_trace!(self, Ok(Solution::Ambig(Guidance::Unknown)));
         }
 
         if outcome.is_complete() {
@@ -556,7 +596,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                     constraints,
                 },
             );
-            return Ok(Solution::Unique(constrained.0));
+            return consume_trace!(self, Ok(Solution::Unique(constrained.0)));
         }
 
         // Otherwise, we have (positive or negative) obligations remaining, but
@@ -590,12 +630,15 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                         solution.constrained_subst(self.solver.interner())
                     {
                         self.apply_solution(free_vars, universes, constrained_subst);
-                        return Ok(Solution::Ambig(Guidance::Suggested(canonical_subst.0)));
+                        return consume_trace!(
+                            self,
+                            Ok(Solution::Ambig(Guidance::Suggested(canonical_subst.0)))
+                        );
                     }
                 }
             }
 
-            Ok(Solution::Ambig(Guidance::Unknown))
+            consume_trace!(self, Ok(Solution::Ambig(Guidance::Unknown)))
         } else {
             // While we failed to prove the goal, we still learned that
             // something had to hold. Here's an example where this happens:
@@ -617,7 +660,10 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             // for sure what `T` must be (it could be either `Foo<Bar>` or
             // `Foo<Baz>`, but we *can* say for sure that it must be of the
             // form `Foo<?0>`.
-            Ok(Solution::Ambig(Guidance::Definite(canonical_subst.0)))
+            consume_trace!(
+                self,
+                Ok(Solution::Ambig(Guidance::Definite(canonical_subst.0)))
+            )
         }
     }
 

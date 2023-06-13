@@ -1,5 +1,5 @@
 use super::combine;
-use super::fulfill::Fulfill;
+use super::fulfill::{Fulfill, TracedOutput};
 use crate::fixed_point::Minimums;
 use crate::UCanonicalGoal;
 use chalk_ir::could_match::CouldMatch;
@@ -15,13 +15,21 @@ use chalk_solve::infer::InferenceTable;
 use chalk_solve::{Guidance, RustIrDatabase, Solution};
 use tracing::{debug, instrument};
 
+use crate::proof_tree::{FromRoot, ProofTree, ProofTreeAssembler, ProofTreeBuilder};
+
+#[derive(Debug, Clone)]
+pub struct TracedFallible<I: Interner> {
+    pub solution: Fallible<Solution<I>>,
+    pub trace: ProofTree<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+}
+
 pub(super) trait SolveDatabase<I: Interner>: Sized {
     fn solve_goal(
         &mut self,
         goal: UCanonical<InEnvironment<Goal<I>>>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>>;
+    ) -> TracedFallible<I>;
 
     fn max_size(&self) -> usize;
 
@@ -42,9 +50,12 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
         canonical_goal: &UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> TracedFallible<I> {
         if !should_continue() {
-            return Ok(Solution::Ambig(Guidance::Unknown));
+            return TracedFallible {
+                solution: Ok(Solution::Ambig(Guidance::Unknown)),
+                trace: ProofTree::proof_halted(),
+            };
         }
 
         let UCanonical {
@@ -58,7 +69,7 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
 
         match goal.data(self.interner()) {
             GoalData::DomainGoal(domain_goal) => {
-                let canonical_goal = UCanonical {
+                let canonical_domain_goal = UCanonical {
                     universes,
                     canonical: Canonical {
                         binders,
@@ -78,7 +89,12 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
                 let prog_solution = {
                     debug_span!("prog_clauses");
 
-                    self.solve_from_clauses(&canonical_goal, minimums, should_continue)
+                    let (solution, builder) =
+                        self.solve_from_clauses(&canonical_domain_goal, minimums, should_continue);
+                    TracedFallible {
+                        solution,
+                        trace: builder.assemble(canonical_goal.clone()),
+                    }
                 };
                 debug!(?prog_solution);
 
@@ -94,7 +110,12 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
                     },
                 };
 
-                self.solve_via_simplification(&canonical_goal, minimums, should_continue)
+                let (solution, builder) =
+                    self.solve_via_simplification(&canonical_goal, minimums, should_continue);
+                TracedFallible {
+                    solution,
+                    trace: builder.assemble(canonical_goal.clone()),
+                }
             }
         }
     }
@@ -115,11 +136,17 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         canonical_goal: &UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> (
+        Fallible<Solution<I>>,
+        ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+    ) {
         let (infer, subst, goal) = self.new_inference_table(canonical_goal);
         match Fulfill::new_with_simplification(self, infer, subst, goal) {
-            Ok(fulfill) => fulfill.solve(minimums, should_continue),
-            Err(e) => Err(e),
+            Ok(fulfill) => {
+                let TracedOutput { result, builder } = fulfill.solve(minimums, should_continue);
+                (result, builder)
+            }
+            Err(builder) => (Err(NoSolution), builder),
         }
     }
 
@@ -131,7 +158,10 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         canonical_goal: &UCanonical<InEnvironment<DomainGoal<I>>>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> (
+        Fallible<Solution<I>>,
+        ProofTreeAssembler<ProgramClause<I>, UCanonicalGoal<I>, Fallible<Solution<I>>>,
+    ) {
         let mut clauses = vec![];
 
         let db = self.db();
@@ -146,7 +176,11 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         match program_clauses_that_could_match(db, canonical_goal) {
             Ok(goal_clauses) => clauses.extend(goal_clauses.into_iter().filter(could_match)),
             Err(Floundered) => {
-                return Ok(Solution::Ambig(Guidance::Unknown));
+                // FIXME: "no solution" is certainly not the right thing here.
+                return (
+                    Ok(Solution::Ambig(Guidance::Unknown)),
+                    ProofTreeAssembler::new(),
+                );
             }
         }
 
@@ -159,6 +193,7 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         );
 
         let mut cur_solution = None;
+        let mut tree_builder = ProofTreeAssembler::new();
         for program_clause in clauses {
             debug_span!("solve_from_clauses", clause = ?program_clause);
 
@@ -166,26 +201,34 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
             let infer = infer.clone();
             let subst = subst.clone();
             let goal = goal.clone();
-            let res = match Fulfill::new_with_clause(self, infer, subst, goal, implication) {
-                Ok(fulfill) => (
-                    fulfill.solve(minimums, should_continue.clone()),
-                    implication.skip_binders().priority,
-                ),
-                Err(e) => (Err(e), ClausePriority::High),
-            };
+            let (res, builder) =
+                match Fulfill::new_with_clause(self, infer, subst, goal, implication) {
+                    Ok(fulfill) => {
+                        let TracedOutput { result, builder } =
+                            fulfill.solve(minimums, should_continue.clone());
+                        ((result, implication.skip_binders().priority), builder)
+                    }
+                    Err(builder) => ((Err(NoSolution), ClausePriority::High), builder),
+                };
+
+            // TODO: we need to register this goal as using a different implication.
+            tree_builder.stage(program_clause.clone(), builder);
 
             if let (Ok(solution), priority) = res {
                 debug!(?solution, ?priority, "Ok");
                 cur_solution = Some(match cur_solution {
                     None => (solution, priority),
-                    Some((cur, cur_priority)) => combine::with_priorities(
-                        self.interner(),
-                        &canonical_goal.canonical.value.goal,
-                        cur,
-                        cur_priority,
-                        solution,
-                        priority,
-                    ),
+                    Some((cur, cur_priority)) => {
+                        let (cur, cur_priority) = combine::with_priorities(
+                            self.interner(),
+                            &canonical_goal.canonical.value.goal,
+                            cur,
+                            cur_priority,
+                            solution,
+                            priority,
+                        );
+                        (cur, cur_priority)
+                    }
                 });
             } else {
                 debug!("Error");
@@ -200,10 +243,10 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
 
         if let Some((s, _)) = cur_solution {
             debug!("solve_from_clauses: result = {:?}", s);
-            Ok(s)
+            (Ok(s), tree_builder)
         } else {
             debug!("solve_from_clauses: error");
-            Err(NoSolution)
+            (Err(NoSolution), tree_builder)
         }
     }
 

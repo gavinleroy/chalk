@@ -1,5 +1,6 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
-use crate::solve::{SolveDatabase, SolveIteration};
+use crate::proof_tree::ProofTree;
+use crate::solve::{SolveDatabase, SolveIteration, TracedFallible};
 use crate::UCanonicalGoal;
 use chalk_ir::{interner::Interner, NoSolution};
 use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
@@ -14,18 +15,18 @@ use std::fmt;
 /// context.
 struct Solver<'me, I: Interner> {
     program: &'me dyn RustIrDatabase<I>,
-    context: &'me mut RecursiveContext<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+    context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
 }
 
 pub struct RecursiveSolver<I: Interner> {
-    ctx: Box<RecursiveContext<UCanonicalGoal<I>, Fallible<Solution<I>>>>,
+    ctx: Box<RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>>,
 }
 
 impl<I: Interner> RecursiveSolver<I> {
     pub fn new(
         overflow_depth: usize,
         max_size: usize,
-        cache: Option<Cache<UCanonicalGoal<I>, Fallible<Solution<I>>>>,
+        cache: Option<Cache<UCanonicalGoal<I>, TracedFallible<I>>>,
     ) -> Self {
         Self {
             ctx: Box::new(RecursiveContext::new(overflow_depth, max_size, cache)),
@@ -41,66 +42,71 @@ impl<I: Interner> fmt::Debug for RecursiveSolver<I> {
 
 impl<'me, I: Interner> Solver<'me, I> {
     pub(crate) fn new(
-        context: &'me mut RecursiveContext<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+        context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
         program: &'me dyn RustIrDatabase<I>,
     ) -> Self {
         Self { program, context }
     }
 }
 
-impl<I: Interner> SolverStuff<UCanonicalGoal<I>, Fallible<Solution<I>>> for &dyn RustIrDatabase<I> {
+impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn RustIrDatabase<I> {
     fn is_coinductive_goal(self, goal: &UCanonicalGoal<I>) -> bool {
         goal.is_coinductive(self)
     }
 
-    fn initial_value(
-        self,
-        goal: &UCanonicalGoal<I>,
-        coinductive_goal: bool,
-    ) -> Fallible<Solution<I>> {
+    fn initial_value(self, goal: &UCanonicalGoal<I>, coinductive_goal: bool) -> TracedFallible<I> {
         if coinductive_goal {
-            Ok(Solution::Unique(Canonical {
-                value: ConstrainedSubst {
-                    subst: goal.trivial_substitution(self.interner()),
-                    constraints: Constraints::empty(self.interner()),
-                },
-                binders: goal.canonical.binders.clone(),
-            }))
+            TracedFallible {
+                solution: Ok(Solution::Unique(Canonical {
+                    value: ConstrainedSubst {
+                        subst: goal.trivial_substitution(self.interner()),
+                        constraints: Constraints::empty(self.interner()),
+                    },
+                    binders: goal.canonical.binders.clone(),
+                })),
+                trace: todo!(),
+            }
         } else {
-            Err(NoSolution)
+            TracedFallible {
+                solution: Err(NoSolution),
+                trace: ProofTree::no_solution(),
+            }
         }
     }
 
     fn solve_iteration(
         self,
-        context: &mut RecursiveContext<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+        context: &mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
         goal: &UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> TracedFallible<I> {
         Solver::new(context, self).solve_iteration(goal, minimums, should_continue)
     }
 
     fn reached_fixed_point(
         self,
-        old_answer: &Fallible<Solution<I>>,
-        current_answer: &Fallible<Solution<I>>,
+        old_answer: &TracedFallible<I>,
+        current_answer: &TracedFallible<I>,
     ) -> bool {
         // Some of our subgoals depended on us. We need to re-run
         // with the current answer.
-        old_answer == current_answer || {
+        old_answer.solution == current_answer.solution || {
             // Subtle: if our current answer is ambiguous, we can just stop, and
             // in fact we *must* -- otherwise, we sometimes fail to reach a
             // fixed point. See `multiple_ambiguous_cycles` for more.
-            match &current_answer {
+            match &current_answer.solution {
                 Ok(s) => s.is_ambig(),
                 Err(_) => false,
             }
         }
     }
 
-    fn error_value(self) -> Fallible<Solution<I>> {
-        Err(NoSolution)
+    fn error_value(self) -> TracedFallible<I> {
+        TracedFallible {
+            solution: Err(NoSolution),
+            trace: ProofTree::no_solution(),
+        }
     }
 }
 
@@ -110,7 +116,7 @@ impl<'me, I: Interner> SolveDatabase<I> for Solver<'me, I> {
         goal: UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> Fallible<Solution<I>> {
+    ) -> TracedFallible<I> {
         self.context
             .solve_goal(&goal, minimums, self.program, should_continue)
     }
@@ -128,13 +134,27 @@ impl<'me, I: Interner> SolveDatabase<I> for Solver<'me, I> {
     }
 }
 
+impl<I: Interner> RecursiveSolver<I> {
+    pub fn solve_traced(
+        &mut self,
+        program: &dyn RustIrDatabase<I>,
+        goal: &UCanonical<InEnvironment<Goal<I>>>,
+        should_continue: &dyn std::ops::Fn() -> bool,
+    ) -> TracedFallible<I> {
+        self.ctx.solve_root_goal(goal, program, should_continue)
+    }
+}
+
 impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
     fn solve(
         &mut self,
         program: &dyn RustIrDatabase<I>,
         goal: &UCanonical<InEnvironment<Goal<I>>>,
     ) -> Option<chalk_solve::Solution<I>> {
-        self.ctx.solve_root_goal(goal, program, || true).ok()
+        self.ctx
+            .solve_root_goal(goal, program, || true)
+            .solution
+            .ok()
     }
 
     fn solve_limited(
@@ -145,6 +165,7 @@ impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
     ) -> Option<chalk_solve::Solution<I>> {
         self.ctx
             .solve_root_goal(goal, program, should_continue)
+            .solution
             .ok()
     }
 
