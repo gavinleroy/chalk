@@ -1,5 +1,5 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
-use crate::proof_tree::ProofTree;
+use crate::proof_tree::{HasFail, ProofTree};
 use crate::solve::{SolveDatabase, SolveIteration, TracedFallible};
 use crate::UCanonicalGoal;
 use chalk_ir::{interner::Interner, NoSolution};
@@ -69,7 +69,7 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
         } else {
             TracedFallible {
                 solution: Err(NoSolution),
-                trace: ProofTree::no_solution(),
+                trace: NoSolution.into(),
             }
         }
     }
@@ -105,7 +105,7 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
     fn error_value(self) -> TracedFallible<I> {
         TracedFallible {
             solution: Err(NoSolution),
-            trace: ProofTree::no_solution(),
+            trace: NoSolution.into(),
         }
     }
 }

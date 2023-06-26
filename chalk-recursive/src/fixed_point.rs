@@ -10,7 +10,7 @@ pub mod stack;
 
 use crate::proof_tree::ProofTree;
 use crate::solve::TracedFallible;
-pub use cache::Cache;
+pub use cache::{Cache, FromCache};
 use search_graph::{DepthFirstNumber, SearchGraph};
 use stack::{Stack, StackDepth};
 
@@ -74,7 +74,7 @@ impl Minimums {
 impl<K, V> RecursiveContext<K, V>
 where
     K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
+    V: Debug + Clone + FromCache<K>,
 {
     pub fn new(overflow_depth: usize, max_size: usize, cache: Option<Cache<K, V>>) -> Self {
         RecursiveContext {
@@ -129,13 +129,13 @@ where
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> V {
         // First check the cache.
-        // FIXME(gavinleroy): disable cache for now ...
-        // if let Some(cache) = &self.cache {
-        //     if let Some(value) = cache.get(goal) {
-        //         debug!("solve_reduced_goal: cache hit, value={:?}", value);
-        //         return value;
-        //     }
-        // }
+        if let Some(cache) = &self.cache {
+            if let Some(value) = cache.get(goal) {
+                let value = value.cached_value(goal.clone());
+                debug!("solve_reduced_goal: cache hit, value={:?}", value);
+                return value;
+            }
+        }
 
         // Next, check if the goal is in the search tree already.
         if let Some(dfn) = self.search_graph.lookup(goal) {

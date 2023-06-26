@@ -1,7 +1,9 @@
 //! Proof tree for solving a goal
 
-use chalk_ir::{interner::Interner, Fallible, NoSolution, ProgramClause, Variance};
-use chalk_solve::Solution;
+use crate::UCanonicalGoal;
+use chalk_ir::{interner::Interner, *};
+use chalk_solve::infer::{InferenceTable, ParameterEnaVariableExt};
+use chalk_solve::{Guidance, Solution};
 
 use rustc_hash::FxHashMap;
 use std::fmt::Debug;
@@ -24,18 +26,6 @@ use crate::fixed_point::{search_graph::SearchGraph, stack::Stack};
 //        know "why" something happened, and the data we are storing
 //        currently is not helpful and very wasteful.
 // ------------------------------------------------------------------
-
-index_vec::define_index_type! {
-    pub struct NodeIdx = usize;
-    MAX_INDEX = usize::max_value();
-    DISABLE_MAX_INDEX_CHECK = cfg!(not(debug_assertions));
-}
-
-index_vec::define_index_type! {
-    pub struct EdgeIdx = usize;
-    MAX_INDEX = usize::max_value();
-    DISABLE_MAX_INDEX_CHECK = cfg!(not(debug_assertions));
-}
 
 // XXX ---------
 //
@@ -69,217 +59,385 @@ index_vec::define_index_type! {
 // --------------------
 // Functional structure
 
-#[derive(Debug, Clone)]
-pub enum ProofTree<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    WithGoal(GoalNode<K, V>),
-    Leaf(LeafNode<K, V>),
+pub trait HasFail {
+    fn fail() -> Self;
+}
+
+// TODO reduce the amount of code by creating a Layer trait
+//      and using a function with_layer(IntoLayer<I>) to
+//      add information to an existing tree.
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProofTree<I: Interner> {
+    // XXX: Use this to introduce "new information" into the tree
+    //      we use this for learning information about the environemtn
+    //      but also to specify new subgoals.
+    Introducing(EdgeInfo<I>, Box<ProofTree<I>>),
+    Nested(NestedNode<I>),
+    Leaf(LeafNode<I>),
     Halted,
 }
 
-#[derive(Debug, Copy, Clone)]
+macro_rules! can_unify {
+    ($($t:ident,)*) => {
+        #[derive(Clone, Debug, PartialEq)]
+        pub enum UnifyKind<I: Interner> {
+            $( $t($t<I>, $t<I>), ) *
+        }
+
+        $(
+        impl<I: Interner> From<(Environment<I>, Variance, $t<I>, $t<I>)> for EdgeInfo<I> {
+            fn from((env, var, a, b): (Environment<I>, Variance, $t<I>, $t<I>)) -> Self {
+                EdgeInfo::Unification {
+                    environment: env,
+                    variance: var,
+                    kind: UnifyKind::$t(a, b)
+                }
+            }
+        }
+
+        impl<I: Interner> From<(Environment<I>, Variance, &$t<I>, &$t<I>)> for EdgeInfo<I> {
+            fn from((env, var, a, b): (Environment<I>, Variance, &$t<I>, &$t<I>)) -> Self {
+                EdgeInfo::Unification {
+                    environment: env,
+                    variance: var,
+                    kind: UnifyKind::$t(a.clone(), b.clone())
+                }
+            }
+        }
+        )*
+
+    }
+}
+
+can_unify!(GenericArg, Ty, DomainGoal,);
+
+#[derive(Clone)]
+pub struct Opaque<T>(T);
+
+impl<T> Debug for Opaque<T> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "Opaque(..)")
+    }
+}
+
+impl<T> PartialEq for Opaque<T> {
+    fn eq(&self, rhs: &Self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EdgeInfo<I: Interner> {
+    UsingClauses {
+        goal: UCanonical<InEnvironment<DomainGoal<I>>>,
+    },
+    UsingSimplification {
+        goal: UCanonicalGoal<I>,
+    },
+    PCImplication(PCINode<I>),
+    Obligation {
+        goal: InEnvironment<Goal<I>>,
+    },
+    Unification {
+        environment: Environment<I>,
+        variance: Variance,
+        kind: UnifyKind<I>,
+    },
+    SubGoal {
+        goal: UCanonicalGoal<I>,
+    },
+    UsingSubstitution {
+        free_vars: Vec<GenericArg<I>>,
+        universes: Opaque<UniverseMap>,
+        subst: Canonical<ConstrainedSubst<I>>,
+    },
+}
+
+#[derive(Clone)]
+pub struct PCINode<I: Interner> {
+    pub clause: Binders<ProgramClauseImplication<I>>,
+    pub infer: InferenceTable<I>,
+}
+
+impl<I: Interner> std::cmp::PartialEq for PCINode<I> {
+    fn eq(&self, other: &Self) -> bool {
+        self.clause.eq(&other.clause)
+    }
+}
+
+impl<I: Interner> Debug for PCINode<I> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{:?}", self.clause)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SubGoalKind {
     Disjunction,
     Conjunction,
+    FixpointIteration,
 }
 
-#[derive(Debug, Clone)]
-pub struct GoalNode<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    // TODO: this isn't sufficient for the entirety of Chalk,
-    //       but we'll expand later to handle other things.
-    pub goal: K,
+#[derive(Debug, Clone, PartialEq)]
+pub struct NestedNode<I: Interner> {
+    pub subgoals: Vec<ProofTree<I>>,
     pub kind: SubGoalKind,
-    pub subgoals: Vec<ProofTree<K, V>>,
-    //
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClauseNode<I: Interner> {
+    pub clause: ProgramClauseImplication<I>,
+    pub subgoal: Box<ProofTree<I>>,
 }
 
 // XXX: Additional information here we could use
 //      for unification failure state, or other operations
 //      that failed with a specific state.
 #[derive(Debug, Clone)]
-pub enum LeafNode<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
+pub enum LeafNode<I: Interner> {
+    FromCache {
+        goal: UCanonicalGoal<I>,
+        result: Box<LeafNode<I>>,
+    },
+    Resolved(Solution<I>),
+    UnificationSuccess,
+    NoSolution,
+    Floundered,
+    Unknown,
+}
+
+impl<I: Interner> std::cmp::PartialEq for LeafNode<I> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LeafNode::FromCache { result, .. }, _) => (**result).eq(other),
+            (_, LeafNode::FromCache { result, .. }) => self.eq(&result),
+            (LeafNode::Resolved(sl), LeafNode::Resolved(sr)) => sl.eq(sr),
+            (LeafNode::NoSolution, LeafNode::NoSolution)
+            | (LeafNode::Unknown, LeafNode::Unknown) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+// TODO: we should probably want to talk about unification
+//       in a broader sense. Not just for goals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnifyNode
+// <I: Interner>
 {
-    Unification(UnifyInfo<K, V>),
-    Resolved(V),
+    // environment?
+    // pub left: K,
+    // pub right: K,
+    // pub variance: Variance,
+    // pub result: V,
 }
 
 // ---------------------------------
 
-pub trait FromRoot<K, V>
+pub trait FromRoot<I: Interner> {
+    fn assemble(self, root: UCanonicalGoal<I>) -> ProofTree<I>;
+}
+
+impl<F, I: Interner> FromRoot<I> for F
 where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
+    F: FnOnce(UCanonicalGoal<I>) -> ProofTree<I>,
 {
-    fn assemble(self, k: K) -> ProofTree<K, V>;
+    fn assemble(self, root: UCanonicalGoal<I>) -> ProofTree<I> {
+        (self)(root)
+    }
 }
 
 // ----------------
 // Stateful builder
-
-#[derive(Debug, Clone)]
-pub struct UnifyInfo<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    // environment?
-    pub left: K,
-    pub right: K,
-    pub variance: Variance,
-    pub result: V,
-}
 
 // TODO: we need to represent the recursive expansion
 //       of goals, here we just keep the flattened results.
 //
 //       This also happens with unification, which can fail,
 //       and also spawn nested obligations.
-pub struct ProofTreeBuilder<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    subgoals: Vec<ProofTree<K, V>>,
-    unification_fail: Option<UnifyInfo<K, V>>,
+#[derive(Clone)]
+pub enum StagedAssembler<I: Interner> {
+    Tree(ProofTree<I>),
+    // Assembler(ProofTreeAssembler<T, I>),
 }
 
-pub struct ProofTreeAssembler<T, K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    pending: Vec<(T, ProofTreeBuilder<K, V>)>,
-}
+// #[derive(Clone)]
+// pub struct ProofTreeAssembler<T, I: Interner> {
+//     pending: Vec<(T, StagedAssembler<I>)>,
+//     kind: SubGoalKind,
+// }
 
-impl<T, K, V> ProofTreeAssembler<T, K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    pub fn new() -> Self {
-        Self { pending: vec![] }
-    }
+// ---------------
+// Assembler impls
 
-    pub fn stage(&mut self, t: T, builder: ProofTreeBuilder<K, V>) {
-        self.pending.push((t, builder));
+impl<I: Interner> FromRoot<I> for ProofTree<I> {
+    fn assemble(self, root: UCanonicalGoal<I>) -> ProofTree<I> {
+        ProofTree::Introducing(EdgeInfo::SubGoal { goal: root }, Box::new(self))
     }
 }
 
-impl<T, K, V> FromRoot<K, V> for ProofTreeAssembler<T, K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    // TODO: generalize these!!!
-    fn assemble(self, root: K) -> ProofTree<K, V> {
-        let attempts = self
-            .pending
-            .into_iter()
-            .map(|(_, bldr)| bldr.assemble(root.clone()))
-            .collect::<Vec<_>>();
-        ProofTree::WithGoal(GoalNode {
-            goal: root,
-            kind: SubGoalKind::Disjunction,
-            subgoals: attempts,
-        })
-    }
-}
-
-impl<K, V> FromRoot<K, V> for ProofTreeBuilder<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    fn assemble(mut self, root: K) -> ProofTree<K, V> {
-        if let Some(unify_info) = self.unification_fail {
-            self.subgoals
-                .push(ProofTree::Leaf(LeafNode::Unification(unify_info)));
-        }
-
-        // TODO: handle the unification failures
-        ProofTree::WithGoal(GoalNode {
-            goal: root,
-            subgoals: self.subgoals,
-            kind: SubGoalKind::Conjunction,
-        })
-    }
-}
-
-impl<K, V> ProofTreeBuilder<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    pub fn new() -> Self {
-        Self {
-            subgoals: Vec::default(),
-            unification_fail: None,
+impl<I: Interner> FromRoot<I> for StagedAssembler<I> {
+    fn assemble(self, root: UCanonicalGoal<I>) -> ProofTree<I> {
+        match self {
+            StagedAssembler::Tree(t) => {
+                ProofTree::Introducing(EdgeInfo::SubGoal { goal: root }, Box::new(t))
+            }
         }
     }
-
-    pub fn add_subtree(&mut self, subgoal: ProofTree<K, V>) {
-        self.subgoals.push(subgoal);
-    }
-
-    pub fn register_unification_failure(&mut self, fail: UnifyInfo<K, V>) {
-        assert!(self.unification_fail.is_none());
-        self.unification_fail = Some(fail);
-    }
-
-    pub fn register_clause_implication<I: Interner>(&mut self, clause: ProgramClause<I>) {}
 }
 
-// ---------------------------------------
-// OLD CRAP TO PORT OVER (or throw away)
+impl<I: Interner> From<Fallible<Solution<I>>> for LeafNode<I> {
+    fn from(fallible: Fallible<Solution<I>>) -> Self {
+        match fallible {
+            Ok(sol) => sol.into(),
+            Err(..) => LeafNode::NoSolution,
+        }
+    }
+}
 
-// impl<K, V> Debug for ProofTree<K, V>
-// where
-//     K: Hash + Eq + Debug + Clone,
-//     V: Debug + Clone,
-// {
-//     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         write!(fmt, "#<proof-tree>")
+impl<I: Interner> From<Floundered> for LeafNode<I> {
+    fn from(err: Floundered) -> Self {
+        LeafNode::Floundered
+    }
+}
+
+impl<I: Interner> From<Floundered> for ProofTree<I> {
+    fn from(err: Floundered) -> Self {
+        ProofTree::Leaf(err.into())
+    }
+}
+
+impl<I: Interner> From<NoSolution> for LeafNode<I> {
+    fn from(err: NoSolution) -> Self {
+        LeafNode::NoSolution
+    }
+}
+
+impl<I: Interner> From<NoSolution> for ProofTree<I> {
+    fn from(err: NoSolution) -> Self {
+        ProofTree::Leaf(err.into())
+    }
+}
+
+impl<I: Interner> From<Solution<I>> for LeafNode<I> {
+    fn from(solution: Solution<I>) -> Self {
+        LeafNode::Resolved(solution)
+    }
+}
+
+impl<I: Interner> From<Fallible<Solution<I>>> for ProofTree<I> {
+    fn from(fallible: Fallible<Solution<I>>) -> Self {
+        ProofTree::Leaf(fallible.into())
+    }
+}
+
+impl<I: Interner> From<Solution<I>> for ProofTree<I> {
+    fn from(solution: Solution<I>) -> Self {
+        ProofTree::Leaf(solution.into())
+    }
+}
+
+// impl<I: Interner> From<ProofTreeAssembler<(), I>> for ProofTree<I> {
+//     fn from(builder: ProofTreeAssembler<(), I>) -> Self {
+//         ProofTree::Nested(NestedNode {
+//             subgoals: builder
+//                 .pending
+//                 .into_iter()
+//                 .map(|((), b)| match b {
+//                     StagedAssembler::Tree(s) => s,
+//                 })
+//                 .collect(),
+//             kind: builder.kind,
+//         })
+//         .compress()
 //     }
 // }
 
-impl<K, V> Debug for ProofTreeBuilder<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(fmt, "#<proof-tree-builder>")
-    }
-}
+// impl<T, I: Interner> ProofTreeAssembler<T, I> {
+//     pub fn new(kind: SubGoalKind) -> Self {
+//         Self {
+//             pending: vec![],
+//             kind,
+//         }
+//     }
 
-impl<K, V> ProofTree<K, V>
-where
-    K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
-{
+//     pub fn stage(&mut self, t: T, builder: StagedAssembler<I>) {
+//         self.pending.push((t, builder));
+//     }
+// }
+
+// impl<I: Interner> HasFail for ProofTreeAssembler<(), I> {
+//     fn fail() -> Self {
+//         let mut asm = ProofTreeAssembler::new(SubGoalKind::Conjunction);
+//         asm.stage((), StagedAssembler::Tree(NoSolution.into()));
+//         asm
+//     }
+// }
+
+// impl<T, I: Interner> FromRoot<I> for ProofTreeAssembler<T, I> {
+//     // TODO: generalize these!!!
+//     fn assemble(self, root: UCanonicalGoal<I>) -> ProofTree<I> {
+//         let mut attempts = self
+//             .pending
+//             .into_iter()
+//             .map(|(_, bldr)| bldr.assemble(root.clone()))
+//             .collect::<Vec<_>>();
+
+//         if attempts.is_empty() {
+//             attempts.push(panic!("dont' assume anything about empty subgoals"));
+//         }
+
+//         ProofTree::Introducing(
+//             EdgeInfo::SubGoal { goal: root },
+//             Box::new(ProofTree::Nested(NestedNode {
+//                 subgoals: attempts,
+//                 kind: self.kind,
+//             })),
+//         )
+//         .compress()
+//     }
+// }
+
+// -------------
+// Builder impls
+
+impl<I: Interner> ProofTree<I> {
     // We can use this to represent something that was stopped from the outside,
     // this doesn't actually provide anything for the proof, but gives us a way
     // to generate a dummy tree.
     pub fn proof_halted() -> Self {
         ProofTree::Halted
     }
-}
 
-impl<K, I: Interner> ProofTree<K, Fallible<Solution<I>>>
-where
-    K: Hash + Eq + Debug + Clone,
-{
-    pub fn no_solution() -> Self {
-        ProofTree::Leaf(LeafNode::Resolved(Err(NoSolution)))
+    pub fn unify_success() -> Self {
+        ProofTree::Leaf(LeafNode::UnificationSuccess)
+    }
+
+    pub fn unknown() -> Self {
+        ProofTree::Leaf(LeafNode::Resolved(Solution::Ambig(Guidance::Unknown)))
+    }
+
+    pub fn fail_for(goal: UCanonicalGoal<I>) -> ProofTree<I> {
+        ProofTree::Introducing(EdgeInfo::SubGoal { goal }, Box::new(NoSolution.into()))
+    }
+
+    pub fn compress(self) -> ProofTree<I> {
+        match self {
+            Self::Introducing(ei, nested) => Self::Introducing(ei, Box::new(nested.compress())),
+            Self::Nested(NestedNode { subgoals, kind }) if !subgoals.is_empty() => {
+                let mut subgoals = subgoals
+                    .into_iter()
+                    .map(|s| s.compress())
+                    .collect::<Vec<_>>();
+
+                if subgoals.len() == 1 || subgoals[1..].iter().all(|e| *e == subgoals[0]) {
+                    return subgoals.pop().unwrap();
+                }
+
+                Self::Nested(NestedNode { subgoals, kind })
+            }
+            n => n,
+        }
     }
 }

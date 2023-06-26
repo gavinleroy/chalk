@@ -1,5 +1,5 @@
 use crate::fixed_point::Minimums;
-use crate::proof_tree::{ProofTree, ProofTreeBuilder};
+use crate::proof_tree::*;
 use crate::solve::{SolveDatabase, TracedFallible};
 use crate::UCanonicalGoal;
 use chalk_ir::cast::Cast;
@@ -17,13 +17,214 @@ use chalk_solve::debug_span;
 use chalk_solve::infer::{InferenceTable, ParameterEnaVariableExt};
 use chalk_solve::solve::truncate;
 use chalk_solve::{Guidance, Solution};
-use rustc_hash::FxHashSet;
+use fluid_let::{fluid_let, fluid_set};
+use index_vec::IndexVec;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt::Debug;
 use tracing::{debug, instrument};
 
-pub struct TracedOutput<T, I: Interner> {
-    pub builder: ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
-    pub result: T,
+// TODO: this was a hack solution to track where the
+//       updated information should go. Pls change.
+fluid_let!(static CURRENT_OBLIGATION: OIdx);
+
+index_vec::define_index_type! {
+    pub struct OIdx = usize;
+}
+
+// We use this to track where the goals and obligations came from.
+struct ObligationSet<I: Interner> {
+    nil_idx: OIdx,
+    goals: IndexVec<OIdx, EdgeInfo<I>>,
+    edges: FxHashMap<OIdx, Vec<OIdx>>,
+    resolution_map: FxHashMap<OIdx, ProofTree<I>>,
+    obligation_map: FxHashMap<OIdx, Obligation<I>>,
+    iteration_info: FxHashMap<OIdx, EdgeInfo<I>>,
+    obligations: Vec<(OIdx, Obligation<I>)>,
+}
+
+impl<I: Interner> ObligationSet<I> {
+    fn new() -> Self {
+        Self {
+            nil_idx: OIdx::new(usize::MAX),
+            goals: IndexVec::new(),
+            edges: FxHashMap::default(),
+            resolution_map: FxHashMap::default(),
+            obligation_map: FxHashMap::default(),
+            iteration_info: FxHashMap::default(),
+            obligations: Vec::default(),
+        }
+    }
+
+    fn register_new_goal(&mut self, info: EdgeInfo<I>) -> OIdx {
+        CURRENT_OBLIGATION.get(|parent| {
+            let my_idx = self.goals.push(info);
+            let mut parent_idx = *parent.unwrap_or(&my_idx);
+            if parent_idx == self.nil_idx {
+                parent_idx = my_idx;
+            }
+            self.edges.entry(parent_idx).or_default().push(my_idx);
+            my_idx
+        })
+    }
+
+    fn register_iteration_substitution(&mut self, info: EdgeInfo<I>) {
+        CURRENT_OBLIGATION.get(|idx| {
+            let my_idx = *idx.unwrap();
+            if let Some(prev) = self.iteration_info.insert(my_idx, info) {
+                panic!("throwing out iteration info {:#?}", prev);
+            }
+        })
+    }
+
+    fn obligation_idx(&self, obl: &Obligation<I>) -> OIdx {
+        self.obligation_map
+            .iter()
+            .find_map(|(k, v)| (*v == *obl).then_some(*k))
+            .unwrap()
+    }
+
+    fn update_proof(&mut self, trace: ProofTree<I>) {
+        use std::collections::hash_map::Entry;
+        CURRENT_OBLIGATION.get(|idx| {
+            let idx = *idx.unwrap();
+
+            // TODO: we can track the incremental update of
+            //       the traces here if something else existed.
+
+            match self.resolution_map.entry(idx) {
+                Entry::Occupied(o) => {
+                    let (k, mut first) = o.remove_entry();
+
+                    if let ProofTree::Nested(NestedNode {
+                        ref mut subgoals,
+                        kind: SubGoalKind::FixpointIteration,
+                    }) = &mut first
+                    {
+                        subgoals.push(trace);
+                    } else {
+                        let mut second = trace;
+                        if let Some(info) = self.iteration_info.remove(&idx) {
+                            second = ProofTree::Introducing(info, Box::new(second));
+                        }
+                        first = ProofTree::Nested(NestedNode {
+                            subgoals: vec![first, second],
+                            kind: SubGoalKind::FixpointIteration,
+                        });
+                    }
+
+                    self.resolution_map.insert(k, first);
+                }
+
+                Entry::Vacant(o) => {
+                    o.insert(trace);
+                }
+            }
+        });
+    }
+
+    fn push(&mut self, obligation: Obligation<I>) {
+        CURRENT_OBLIGATION.get(|idx| {
+            let my_idx = *idx.unwrap();
+            self.obligation_map.insert(my_idx, obligation.clone());
+            self.obligations.push((my_idx, obligation));
+        });
+    }
+
+    fn construct_proof(mut self, answer: Option<Fallible<Solution<I>>>) -> ProofTree<I> {
+        fn visit_node<I: Interner>(
+            i: OIdx,
+            os: &mut ObligationSet<I>,
+            leaf: &mut Option<LeafNode<I>>,
+        ) -> ProofTree<I> {
+            let mut subs = vec![];
+
+            if let Some(children) = os.edges.remove(&i) {
+                let subgoals = children.into_iter().filter_map(|j| {
+                    if i != j {
+                        Some(visit_node(j, os, leaf))
+                    } else {
+                        None
+                    }
+                });
+
+                subs.extend(subgoals);
+            }
+
+            if let Some(nested_form) = os.resolution_map.remove(&i) {
+                subs.push(nested_form);
+            }
+
+            if subs.is_empty() {
+                if let Some(last) = leaf.take() {
+                    subs.push(ProofTree::Leaf(last));
+                } else {
+                    panic!("index doesn't have nested anything! {:?}", i);
+                }
+            }
+
+            assert!(!subs.is_empty());
+
+            let nested_form = ProofTree::Nested(NestedNode {
+                subgoals: subs,
+                kind: SubGoalKind::Conjunction,
+            });
+
+            let info = os.goals[i].clone();
+            ProofTree::Introducing(info, Box::new(nested_form))
+        }
+
+        let mut leaf = answer.map(|v| v.into());
+
+        let roots = self
+            .edges
+            .iter()
+            .filter_map(|(k, vs)| vs.contains(k).then_some(*k))
+            .collect::<Vec<_>>();
+
+        let subgoals = roots
+            .into_iter()
+            .map(|i| visit_node(i, &mut self, &mut leaf))
+            .collect::<Vec<_>>();
+
+        assert!(self.edges.is_empty(), "not all edges used {:?}", self.edges);
+        assert!(
+            self.resolution_map.is_empty(),
+            "not all solutions used {:?}",
+            self.resolution_map
+        );
+
+        match (leaf, subgoals.is_empty()) {
+            (Some(sol), true) => {
+                return ProofTree::Leaf(sol);
+            }
+            (None, true) => panic!("no default soution with empty set"),
+            (_, _) => ProofTree::Nested(NestedNode {
+                subgoals,
+                kind: SubGoalKind::Conjunction,
+            })
+            .compress(),
+        }
+    }
+}
+
+impl<I: Interner> std::fmt::Debug for ObligationSet<I> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "{:?}", self.obligations)
+    }
+}
+
+impl<I: Interner> std::ops::Deref for ObligationSet<I> {
+    type Target = Vec<(OIdx, Obligation<I>)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.obligations
+    }
+}
+
+impl<I: Interner> std::ops::DerefMut for ObligationSet<I> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.obligations
+    }
 }
 
 enum Outcome {
@@ -128,11 +329,8 @@ pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
     subst: Substitution<I>,
     infer: InferenceTable<I>,
 
-    /// Proof trace of actions taken to solve the root goal
-    trace: ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
-
     /// The remaining goals to prove or refute
-    obligations: Vec<Obligation<I>>,
+    obligations: ObligationSet<I>,
 
     /// Lifetime constraints that must be fulfilled for a solution to be fully
     /// validated.
@@ -147,13 +345,13 @@ pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
 // FIXME: Previously we returned a `Fallible` type which simply uses the NoSolution
 //        variant as the error, here we just return the attempted proof tree, and
 //        later can use NoSolution as the Fallible<Solution<I>> type.
-type TracedCreate<T, I> = Result<T, ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>>;
+type TracedCreate<T, I> = Result<T, ProofTree<I>>;
 
 impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     #[instrument(level = "debug", skip(solver, infer))]
     pub(super) fn new_with_clause(
         solver: &'s mut Solver,
-        infer: InferenceTable<I>,
+        mut infer: InferenceTable<I>,
         subst: Substitution<I>,
         canonical_goal: InEnvironment<DomainGoal<I>>,
         clause: &Binders<ProgramClauseImplication<I>>,
@@ -161,12 +359,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let mut fulfill = Fulfill {
             solver,
             infer,
-            trace: ProofTreeBuilder::new(),
             subst,
-            obligations: vec![],
+            obligations: ObligationSet::new(),
             constraints: FxHashSet::default(),
             cannot_prove: false,
         };
+
+        fluid_set!(CURRENT_OBLIGATION, fulfill.obligations.nil_idx);
 
         let ProgramClauseImplication {
             consequence,
@@ -190,13 +389,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             &canonical_goal.goal,
             &consequence,
         ) {
-            return Err(fulfill.trace);
+            return Err(fulfill.obligations.construct_proof(Some(Err(NoSolution))));
         }
 
         // if so, toss in all of its premises
         for condition in conditions.as_slice(fulfill.solver.interner()) {
             if let Err(e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
-                return Err(fulfill.trace);
+                return Err(fulfill.obligations.construct_proof(Some(Err(NoSolution))));
             }
         }
 
@@ -212,16 +411,17 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let mut fulfill = Fulfill {
             solver,
             infer,
-            trace: ProofTreeBuilder::new(),
             subst,
-            obligations: vec![],
+            obligations: ObligationSet::new(),
             constraints: FxHashSet::default(),
             cannot_prove: false,
         };
 
+        fluid_set!(CURRENT_OBLIGATION, fulfill.obligations.nil_idx);
+
         if let Err(e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
         {
-            return Err(fulfill.trace);
+            return Err(fulfill.obligations.construct_proof(Some(Err(NoSolution))));
         }
 
         Ok(fulfill)
@@ -270,8 +470,14 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         b: &T,
     ) -> Fallible<()>
     where
-        T: ?Sized + Zip<I> + Debug,
+        T: Clone + Zip<I> + Debug,
+        (Environment<I>, Variance, T, T): Into<EdgeInfo<I>>,
     {
+        let goal_idx = self
+            .obligations
+            .register_new_goal((environment.clone(), variance, a.clone(), b.clone()).into());
+        fluid_set!(CURRENT_OBLIGATION, goal_idx);
+
         let goals = match unify(
             &mut self.infer,
             self.solver.interner(),
@@ -283,18 +489,28 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         ) {
             Ok(goals) => goals,
             Err(e) => {
-                // TODO(gavin): save the values that we wanted to unify
-                //     and report as an obligation failure.
-                // self.trace.unification_fail(a, b);
-
+                self.obligations.update_proof(e.clone().into());
                 return Err(e);
             }
         };
 
         debug!("unify({:?}, {:?}) succeeded", a, b);
         debug!("unify: goals={:?}", goals);
+
+        // If there are no more subgoals then the unification
+        // succeeded without requiring any additional constraints.
+        if goals.is_empty() {
+            self.obligations.update_proof(ProofTree::unify_success());
+        }
+
         for goal in goals {
             let goal = goal.cast(self.solver.interner());
+
+            let goal_idx = self
+                .obligations
+                .register_new_goal(EdgeInfo::Obligation { goal: goal.clone() });
+            fluid_set!(CURRENT_OBLIGATION, goal_idx);
+
             self.push_obligation(Obligation::Prove(goal));
         }
         Ok(())
@@ -308,6 +524,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         environment: &Environment<I>,
         goal: Goal<I>,
     ) -> Fallible<()> {
+        let goal_idx = self.obligations.register_new_goal(EdgeInfo::Obligation {
+            goal: InEnvironment::new(environment, goal.clone()),
+        });
+        fluid_set!(CURRENT_OBLIGATION, goal_idx);
+
         let interner = self.solver.interner();
         match goal.data(interner) {
             GoalData::Quantified(QuantifierKind::ForAll, subgoal) => {
@@ -357,6 +578,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                     TyKind::InferenceVar(_, TyVariableKind::General)
                 ) {
                     self.cannot_prove = true;
+                    self.obligations.update_proof(ProofTree::unknown());
                 } else {
                     self.unify(environment, Variance::Covariant, &a, &b)?;
                 }
@@ -364,6 +586,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             GoalData::CannotProve => {
                 debug!("Pushed a CannotProve goal, setting cannot_prove = true");
                 self.cannot_prove = true;
+                self.obligations.update_proof(ProofTree::unknown());
             }
         }
         Ok(())
@@ -382,8 +605,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let TracedFallible { solution, trace } =
             self.solver
                 .solve_goal(quantified, minimums, should_continue);
-
-        self.trace.add_subtree(trace);
+        self.obligations.update_proof(trace);
         solution.map(|solution| PositiveSolution {
             free_vars,
             universes,
@@ -416,7 +638,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             self.solver
                 .solve_goal(quantified, &mut minimums, should_continue);
 
-        self.trace.add_subtree(trace);
+        self.obligations.update_proof(trace);
         if let Ok(solution) = solution {
             if solution.is_unique() {
                 Err(NoSolution)
@@ -498,7 +720,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             // `solve_one` may also push onto the `self.to_prove` list
             // directly.
             assert!(obligations.is_empty());
-            while let Some(obligation) = self.obligations.pop() {
+            while let Some((goal_idx, obligation)) = self.obligations.pop() {
+                fluid_set!(CURRENT_OBLIGATION, goal_idx);
                 let ambiguous = match &obligation {
                     Obligation::Prove(wc) => {
                         let PositiveSolution {
@@ -536,7 +759,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
                 if ambiguous {
                     debug!("ambiguous result: {:?}", obligation);
-                    obligations.push(obligation);
+                    obligations.push((goal_idx, obligation));
                 }
             }
 
@@ -563,24 +786,56 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         mut self,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> TracedOutput<Fallible<Solution<I>>, I> {
+    ) -> TracedFallible<I> {
+        use crate::proof_tree::HasFail;
         macro_rules! consume_trace {
-            ($this:tt, $sol:expr) => {
-                TracedOutput {
-                    result: $sol,
-                    builder: $this.trace,
+            ($this:tt, $val1:expr, $val2:expr) => {{
+                TracedFallible {
+                    solution: $val1,
+                    trace: $this.obligations.construct_proof(Some($val2)),
                 }
-            };
+            }};
+            ($this:tt, Unique => $sol:expr) => {{
+                consume_trace!(
+                    $this,
+                    Ok(Solution::Unique($sol.clone())),
+                    Ok(Solution::Unique($sol))
+                )
+            }};
+            ($this:tt, Suggested => $sol:expr) => {{
+                consume_trace!(
+                    $this,
+                    Ok(Solution::Ambig(Guidance::Suggested($sol.clone()))),
+                    Ok(Solution::Ambig(Guidance::Suggested($sol)))
+                )
+            }};
+            ($this:tt, Definite => $sol:expr) => {{
+                consume_trace!(
+                    $this,
+                    Ok(Solution::Ambig(Guidance::Definite($sol.clone()))),
+                    Ok(Solution::Ambig(Guidance::Definite($sol)))
+                )
+            }};
+            ($this:tt, Unknown) => {{
+                consume_trace!(
+                    $this,
+                    Ok(Solution::Ambig(Guidance::Unknown)),
+                    Ok(Solution::Ambig(Guidance::Unknown))
+                )
+            }};
+            ($this:tt, Error => $err:expr) => {{
+                consume_trace!($this, Err($err.clone()), Err($err))
+            }};
         }
 
         let outcome = match self.fulfill(minimums, should_continue.clone()) {
             Ok(o) => o,
-            Err(e) => return consume_trace!(self, Err(e)),
+            Err(e) => return consume_trace!(self, Error => e),
         };
 
         if self.cannot_prove {
             debug!("Goal cannot be proven (cannot_prove = true), returning ambiguous");
-            return consume_trace!(self, Ok(Solution::Ambig(Guidance::Unknown)));
+            return consume_trace!(self, Unknown);
         }
 
         if outcome.is_complete() {
@@ -596,7 +851,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                     constraints,
                 },
             );
-            return consume_trace!(self, Ok(Solution::Unique(constrained.0)));
+            return consume_trace!(self, Unique => constrained.0);
         }
 
         // Otherwise, we have (positive or negative) obligations remaining, but
@@ -619,7 +874,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             // particular guarantees about *which* obligaiton we derive
             // suggestions from.
 
-            while let Some(obligation) = self.obligations.pop() {
+            while let Some((goal_idx, obligation)) = self.obligations.pop() {
+                fluid_set!(CURRENT_OBLIGATION, goal_idx);
                 if let Obligation::Prove(goal) = obligation {
                     let PositiveSolution {
                         free_vars,
@@ -632,13 +888,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                         self.apply_solution(free_vars, universes, constrained_subst);
                         return consume_trace!(
                             self,
-                            Ok(Solution::Ambig(Guidance::Suggested(canonical_subst.0)))
+                            Suggested => canonical_subst.0
                         );
                     }
                 }
             }
 
-            consume_trace!(self, Ok(Solution::Ambig(Guidance::Unknown)))
+            consume_trace!(self, Unknown)
         } else {
             // While we failed to prove the goal, we still learned that
             // something had to hold. Here's an example where this happens:
@@ -662,7 +918,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             // form `Foo<?0>`.
             consume_trace!(
                 self,
-                Ok(Solution::Ambig(Guidance::Definite(canonical_subst.0)))
+                Definite => canonical_subst.0
             )
         }
     }

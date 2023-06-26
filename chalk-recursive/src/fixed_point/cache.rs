@@ -4,6 +4,16 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 use tracing::instrument;
+
+pub trait FromCache<K>: Clone
+where
+    K: Hash + Eq + Debug,
+{
+    fn cached_value(&self, _: K) -> Self {
+        self.clone()
+    }
+}
+
 /// The "cache" stores results for goals that we have completely solved.
 /// Things are added to the cache when we have completely processed their
 /// result, and it can be shared amongst many solvers.
@@ -25,7 +35,7 @@ where
 impl<K, V> Cache<K, V>
 where
     K: Hash + Eq + Debug,
-    V: Debug + Clone,
+    V: Debug + Clone + FromCache<K>,
 {
     pub fn new() -> Self {
         Self::default()

@@ -1,5 +1,5 @@
 use super::stack::StackDepth;
-use super::{Cache, Minimums};
+use super::{Cache, FromCache, Minimums};
 use rustc_hash::FxHashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -46,7 +46,7 @@ pub struct Node<K, V> {
 impl<K, V> SearchGraph<K, V>
 where
     K: Hash + Eq + Debug + Clone,
-    V: Debug + Clone,
+    V: Debug + Clone + FromCache<K>,
 {
     pub(crate) fn new() -> Self {
         SearchGraph {

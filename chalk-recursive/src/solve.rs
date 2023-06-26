@@ -1,6 +1,6 @@
 use super::combine;
-use super::fulfill::{Fulfill, TracedOutput};
-use crate::fixed_point::Minimums;
+use super::fulfill::Fulfill;
+use crate::fixed_point::{FromCache, Minimums};
 use crate::UCanonicalGoal;
 use chalk_ir::could_match::CouldMatch;
 use chalk_ir::fold::TypeFoldable;
@@ -15,12 +15,33 @@ use chalk_solve::infer::InferenceTable;
 use chalk_solve::{Guidance, RustIrDatabase, Solution};
 use tracing::{debug, instrument};
 
-use crate::proof_tree::{FromRoot, ProofTree, ProofTreeAssembler, ProofTreeBuilder};
+use crate::proof_tree::*;
 
 #[derive(Debug, Clone)]
 pub struct TracedFallible<I: Interner> {
     pub solution: Fallible<Solution<I>>,
-    pub trace: ProofTree<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+    pub trace: ProofTree<I>,
+}
+
+impl<I: Interner> TracedFallible<I> {
+    fn map(self, layer: impl Fn(ProofTree<I>) -> ProofTree<I>) -> Self {
+        TracedFallible {
+            trace: layer(self.trace),
+            ..self
+        }
+    }
+}
+
+impl<I: Interner> FromCache<UCanonical<InEnvironment<Goal<I>>>> for TracedFallible<I> {
+    fn cached_value(&self, from: UCanonical<InEnvironment<Goal<I>>>) -> Self {
+        TracedFallible {
+            solution: self.solution.clone(),
+            trace: ProofTree::Leaf(LeafNode::FromCache {
+                goal: from,
+                result: Box::new(self.solution.clone().into()),
+            }),
+        }
+    }
 }
 
 pub(super) trait SolveDatabase<I: Interner>: Sized {
@@ -89,12 +110,7 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
                 let prog_solution = {
                     debug_span!("prog_clauses");
 
-                    let (solution, builder) =
-                        self.solve_from_clauses(&canonical_domain_goal, minimums, should_continue);
-                    TracedFallible {
-                        solution,
-                        trace: builder.assemble(canonical_goal.clone()),
-                    }
+                    self.solve_from_clauses(&canonical_domain_goal, minimums, should_continue)
                 };
                 debug!(?prog_solution);
 
@@ -110,12 +126,7 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
                     },
                 };
 
-                let (solution, builder) =
-                    self.solve_via_simplification(&canonical_goal, minimums, should_continue);
-                TracedFallible {
-                    solution,
-                    trace: builder.assemble(canonical_goal.clone()),
-                }
+                self.solve_via_simplification(&canonical_goal, minimums, should_continue)
             }
         }
     }
@@ -129,25 +140,31 @@ where
 }
 
 /// Helper methods for `solve_iteration`, private to this module.
-trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
+trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
     #[instrument(level = "debug", skip(self, minimums, should_continue))]
     fn solve_via_simplification(
         &mut self,
         canonical_goal: &UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> (
-        Fallible<Solution<I>>,
-        ProofTreeBuilder<UCanonicalGoal<I>, Fallible<Solution<I>>>,
-    ) {
+    ) -> TracedFallible<I> {
         let (infer, subst, goal) = self.new_inference_table(canonical_goal);
-        match Fulfill::new_with_simplification(self, infer, subst, goal) {
-            Ok(fulfill) => {
-                let TracedOutput { result, builder } = fulfill.solve(minimums, should_continue);
-                (result, builder)
-            }
-            Err(builder) => (Err(NoSolution), builder),
-        }
+        let traced = match Fulfill::new_with_simplification(self, infer, subst, goal) {
+            Ok(fulfill) => fulfill.solve(minimums, should_continue),
+            Err(trace) => TracedFallible {
+                solution: Err(NoSolution),
+                trace,
+            },
+        };
+
+        traced.map(|tree| {
+            ProofTree::Introducing(
+                EdgeInfo::UsingSimplification {
+                    goal: canonical_goal.clone(),
+                },
+                Box::new(tree),
+            )
+        })
     }
 
     /// See whether we can solve a goal by implication on any of the given
@@ -158,11 +175,16 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         canonical_goal: &UCanonical<InEnvironment<DomainGoal<I>>>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
-    ) -> (
-        Fallible<Solution<I>>,
-        ProofTreeAssembler<ProgramClause<I>, UCanonicalGoal<I>, Fallible<Solution<I>>>,
-    ) {
+    ) -> TracedFallible<I> {
         let mut clauses = vec![];
+        let enclose_trace = |tree| {
+            ProofTree::Introducing(
+                EdgeInfo::UsingClauses {
+                    goal: canonical_goal.clone(),
+                },
+                Box::new(tree),
+            )
+        };
 
         let db = self.db();
         let could_match = |c: &ProgramClause<I>| {
@@ -176,11 +198,11 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         match program_clauses_that_could_match(db, canonical_goal) {
             Ok(goal_clauses) => clauses.extend(goal_clauses.into_iter().filter(could_match)),
             Err(Floundered) => {
-                // FIXME: "no solution" is certainly not the right thing here.
-                return (
-                    Ok(Solution::Ambig(Guidance::Unknown)),
-                    ProofTreeAssembler::new(),
-                );
+                return TracedFallible {
+                    solution: Ok(Solution::Ambig(Guidance::Unknown)),
+                    // TODO: introduce a notion of floundering in the tree
+                    trace: enclose_trace(Floundered.into()),
+                };
             }
         }
 
@@ -193,7 +215,7 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
         );
 
         let mut cur_solution = None;
-        let mut tree_builder = ProofTreeAssembler::new();
+        let mut nested_trees = vec![];
         for program_clause in clauses {
             debug_span!("solve_from_clauses", clause = ?program_clause);
 
@@ -201,18 +223,23 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
             let infer = infer.clone();
             let subst = subst.clone();
             let goal = goal.clone();
-            let (res, builder) =
-                match Fulfill::new_with_clause(self, infer, subst, goal, implication) {
+            let (res, tree) =
+                match Fulfill::new_with_clause(self, infer.clone(), subst, goal, implication) {
                     Ok(fulfill) => {
-                        let TracedOutput { result, builder } =
+                        let TracedFallible { solution, trace } =
                             fulfill.solve(minimums, should_continue.clone());
-                        ((result, implication.skip_binders().priority), builder)
+                        ((solution, implication.skip_binders().priority), trace)
                     }
-                    Err(builder) => ((Err(NoSolution), ClausePriority::High), builder),
+                    Err(trace) => ((Err(NoSolution), ClausePriority::High), trace),
                 };
 
-            // TODO: we need to register this goal as using a different implication.
-            tree_builder.stage(program_clause.clone(), builder);
+            nested_trees.push(ProofTree::Introducing(
+                EdgeInfo::PCImplication(PCINode {
+                    clause: implication.clone(),
+                    infer,
+                }),
+                Box::new(tree),
+            ));
 
             if let (Ok(solution), priority) = res {
                 debug!(?solution, ?priority, "Ok");
@@ -241,12 +268,27 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
             }
         }
 
+        let trace = if nested_trees.is_empty() {
+            None
+        } else {
+            Some(enclose_trace(ProofTree::Nested(NestedNode {
+                subgoals: nested_trees,
+                kind: SubGoalKind::Disjunction,
+            })))
+        };
+
         if let Some((s, _)) = cur_solution {
             debug!("solve_from_clauses: result = {:?}", s);
-            (Ok(s), tree_builder)
+            TracedFallible {
+                solution: Ok(s.clone()),
+                trace: trace.unwrap_or_else(|| s.into()),
+            }
         } else {
             debug!("solve_from_clauses: error");
-            (Err(NoSolution), tree_builder)
+            TracedFallible {
+                solution: Err(NoSolution),
+                trace: trace.unwrap_or_else(|| NoSolution.into()),
+            }
         }
     }
 
@@ -263,9 +305,9 @@ trait SolveIterationHelpers<I: Interner>: SolveDatabase<I> {
     }
 }
 
-impl<S, I> SolveIterationHelpers<I> for S
+impl<'a, S, I> SolveIterationHelpers<'a, I> for S
 where
     S: SolveDatabase<I>,
-    I: Interner,
+    I: Interner + 'a,
 {
 }

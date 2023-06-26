@@ -18,6 +18,15 @@ where
     }
 }
 
+impl<F> fmt::Debug for Fmt<F>
+where
+    F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (self.0)(f)
+    }
+}
+
 impl<I: Interner> Debug for TraitId<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         I::debug_trait_id(*self, fmt).unwrap_or_else(|| write!(fmt, "TraitId({:?})", self.0))
