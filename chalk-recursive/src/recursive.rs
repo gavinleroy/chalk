@@ -1,7 +1,7 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
-use crate::proof_tree::{HasFail, ProofTree};
 use crate::solve::{SolveDatabase, SolveIteration, TracedFallible};
 use crate::UCanonicalGoal;
+use argus::proof_tree::ProofTree;
 use chalk_ir::{interner::Interner, NoSolution};
 use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
 use chalk_ir::{Constraints, Fallible};

@@ -42,6 +42,30 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+#[cfg(feature = "tserialize")]
+use serde::Serialize;
+
+#[cfg(feature = "tserialize")]
+use ts_rs::TS;
+
+// HACK: to avoid changing all the testing infrastructure.
+
+#[cfg(feature = "tserialize")]
+/// Trait requiring TS and Serialize.
+pub trait TSerialize: TS + Serialize {}
+
+#[cfg(feature = "tserialize")]
+impl<T: TS + Serialize> TSerialize for T {}
+
+/// Dummy Trait
+#[cfg(not(feature = "tserialize"))]
+pub trait TSerialize {}
+
+#[cfg(not(feature = "tserialize"))]
+impl<T> TSerialize for T {}
+
+// ---
+
 /// A "interner" encapsulates the concrete representation of
 /// certain "core types" from chalk-ir. All the types in chalk-ir are
 /// parameterized by a `I: Interner`, and so (e.g.) if they want to
@@ -57,7 +81,10 @@ use std::sync::Arc;
 /// (e.g., `SourceI` and `TargetI`) -- even if those type parameters
 /// wind up being mapped to the same underlying type families in the
 /// end.
-pub trait Interner: Debug + Copy + Eq + Hash + Sized {
+pub trait Interner: Debug + Copy + Eq + Hash + Sized
+where
+    Self: TSerialize,
+{
     /// "Interned" representation of types.  In normal user code,
     /// `Self::InternedType` is not referenced. Instead, we refer to
     /// `Ty<Self>`, which wraps this type.
@@ -67,7 +94,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// converted back (by the [`ty_data`][Self::ty_data] method). The interned form
     /// must also introduce indirection, either via a `Box`, `&`, or
     /// other pointer type.
-    type InternedType: Debug + Clone + Eq + Hash;
+    type InternedType: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of lifetimes.  In normal user code,
     /// `Self::InternedLifetime` is not referenced. Instead, we refer to
@@ -76,7 +103,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// An `InternedLifetime` must be something that can be created
     /// from a `LifetimeData` (by the [`intern_lifetime`][Self::intern_lifetime] method) and
     /// then later converted back (by the [`lifetime_data`][Self::lifetime_data] method).
-    type InternedLifetime: Debug + Clone + Eq + Hash;
+    type InternedLifetime: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of const expressions. In normal user code,
     /// `Self::InternedConst` is not referenced. Instead, we refer to
@@ -85,7 +112,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// An `InternedConst` must be something that can be created
     /// from a `ConstData` (by the [`intern_const`][Self::intern_const] method) and
     /// then later converted back (by the [`const_data`][Self::const_data] method).
-    type InternedConst: Debug + Clone + Eq + Hash;
+    type InternedConst: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of an evaluated const value.
     /// `Self::InternedConcreteConst` is not referenced. Instead,
@@ -94,7 +121,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// `InternedConcreteConst` instances are not created by chalk,
     /// it can only make a query asking about equality of two
     /// evaluated consts.
-    type InternedConcreteConst: Debug + Clone + Eq + Hash;
+    type InternedConcreteConst: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a "generic parameter", which can
     /// be either a type or a lifetime.  In normal user code,
@@ -103,7 +130,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedType` is created by `intern_generic_arg` and can be
     /// converted back to its underlying data via `generic_arg_data`.
-    type InternedGenericArg: Debug + Clone + Eq + Hash;
+    type InternedGenericArg: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a "goal".  In normal user code,
     /// `Self::InternedGoal` is not referenced. Instead, we refer to
@@ -111,7 +138,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedGoal` is created by `intern_goal` and can be
     /// converted back to its underlying data via `goal_data`.
-    type InternedGoal: Debug + Clone + Eq + Hash;
+    type InternedGoal: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of goals.  In normal user code,
     /// `Self::InternedGoals` is not referenced. Instead, we refer to
@@ -119,7 +146,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedGoals` is created by `intern_goals` and can be
     /// converted back to its underlying data via `goals_data`.
-    type InternedGoals: Debug + Clone + Eq + Hash;
+    type InternedGoals: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a "substitution".  In normal user code,
     /// `Self::InternedSubstitution` is not referenced. Instead, we refer to
@@ -127,7 +154,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedSubstitution` is created by `intern_substitution` and can be
     /// converted back to its underlying data via `substitution_data`.
-    type InternedSubstitution: Debug + Clone + Eq + Hash;
+    type InternedSubstitution: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of program clauses.  In normal user code,
     /// `Self::InternedProgramClauses` is not referenced. Instead, we refer to
@@ -135,7 +162,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedProgramClauses` is created by `intern_program_clauses` and can be
     /// converted back to its underlying data via `program_clauses_data`.
-    type InternedProgramClauses: Debug + Clone + Eq + Hash;
+    type InternedProgramClauses: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a "program clause".  In normal user code,
     /// `Self::InternedProgramClause` is not referenced. Instead, we refer to
@@ -143,7 +170,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedProgramClause` is created by `intern_program_clause` and can be
     /// converted back to its underlying data via `program_clause_data`.
-    type InternedProgramClause: Debug + Clone + Eq + Hash;
+    type InternedProgramClause: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of quantified where clauses.
     /// In normal user code, `Self::InternedQuantifiedWhereClauses` is not referenced.
@@ -151,7 +178,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedQuantifiedWhereClauses` is created by `intern_quantified_where_clauses`
     /// and can be converted back to its underlying data via `quantified_where_clauses_data`.
-    type InternedQuantifiedWhereClauses: Debug + Clone + Eq + Hash;
+    type InternedQuantifiedWhereClauses: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of variable kinds.
     /// In normal user code, `Self::InternedVariableKinds` is not referenced.
@@ -159,7 +186,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedVariableKinds` is created by `intern_generic_arg_kinds`
     /// and can be converted back to its underlying data via `variable_kinds_data`.
-    type InternedVariableKinds: Debug + Clone + Eq + Hash;
+    type InternedVariableKinds: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of variable kinds with universe index.
     /// In normal user code, `Self::InternedCanonicalVarKinds` is not referenced.
@@ -168,7 +195,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// An `InternedCanonicalVarKinds` is created by
     /// `intern_canonical_var_kinds` and can be converted back
     /// to its underlying data via `canonical_var_kinds_data`.
-    type InternedCanonicalVarKinds: Debug + Clone + Eq + Hash;
+    type InternedCanonicalVarKinds: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of region constraints.
     /// In normal user code, `Self::InternedConstraints` is not referenced.
@@ -176,7 +203,7 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     ///
     /// An `InternedConstraints` is created by `intern_constraints`
     /// and can be converted back to its underlying data via `constraints_data`.
-    type InternedConstraints: Debug + Clone + Eq + Hash;
+    type InternedConstraints: Debug + Clone + Eq + Hash + TSerialize;
 
     /// "Interned" representation of a list of `chalk_ir::Variance`.
     /// In normal user code, `Self::InternedVariances` is not referenced.
@@ -185,19 +212,19 @@ pub trait Interner: Debug + Copy + Eq + Hash + Sized {
     /// An `InternedVariances` is created by
     /// `intern_variances` and can be converted back
     /// to its underlying data via `variances_data`.
-    type InternedVariances: Debug + Clone + Eq + Hash;
+    type InternedVariances: Debug + Clone + Eq + Hash + TSerialize;
 
     /// The core "id" type used for trait-ids and the like.
-    type DefId: Debug + Copy + Eq + Hash;
+    type DefId: Debug + Copy + Eq + Hash + TSerialize;
 
     /// The ID type for ADTs
-    type InternedAdtId: Debug + Copy + Eq + Hash;
+    type InternedAdtId: Debug + Copy + Eq + Hash + TSerialize;
 
     /// Representation of identifiers.
-    type Identifier: Debug + Clone + Eq + Hash;
+    type Identifier: Debug + Clone + Eq + Hash + TSerialize;
 
     /// Representation of function ABI (e.g. calling convention).
-    type FnAbi: Debug + Copy + Eq + Hash;
+    type FnAbi: Debug + Copy + Eq + Hash + TSerialize;
 
     /// Prints the debug representation of a type-kind-id.
     /// Returns `None` to fallback to the default debug output.

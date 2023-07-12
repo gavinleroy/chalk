@@ -16,11 +16,32 @@ use chalk_derive::{
 use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
+#[cfg(feature = "tserialize")]
+use serde::Serialize;
+
+#[cfg(feature = "tserialize")]
+use ts_rs::TS;
+
 pub use crate::debug::SeparatorTraitRef;
 #[macro_use(bitflags)]
 extern crate bitflags;
+
+// ----
+
+#[allow(dead_code)]
+const fn static_panic() {
+    assert!(false);
+}
+
+#[cfg(not(feature = "tserialize"))]
+const _: () = static_panic();
+
 /// Uninhabited (empty) type, used in combination with `PhantomData`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum Void {}
 
 /// Many of our internal operations (e.g., unification) are an attempt
@@ -39,7 +60,11 @@ pub enum FallibleOrFloundered<T> {
 
 /// Indicates that the attempted operation has "no solution" -- i.e.,
 /// cannot be performed.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct NoSolution;
 
 /// Indicates that the complete set of program clauses for this goal
@@ -70,13 +95,17 @@ pub mod visit;
 pub mod cast;
 
 pub mod interner;
-use interner::{HasInterner, Interner};
+use interner::{HasInterner, Interner, TSerialize};
 
 pub mod could_match;
 pub mod debug;
 
 /// Variance
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum Variance {
     /// a <: b
     Covariant,
@@ -150,6 +179,10 @@ impl Variance {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 /// The set of assumptions we've made so far, and the current number of
 /// universal (forall) quantifiers we're within.
 pub struct Environment<I: Interner> {
@@ -200,18 +233,22 @@ impl<I: Interner> Environment<I> {
 
 /// A goal with an environment to solve it in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
-pub struct InEnvironment<G: HasInterner> {
+pub struct InEnvironment<G: HasInterner + TSerialize> {
     pub environment: Environment<G::Interner>,
     pub goal: G,
 }
 
-impl<G: HasInterner<Interner = I> + Copy, I: Interner> Copy for InEnvironment<G> where
+impl<G: HasInterner<Interner = I> + Copy + TSerialize, I: Interner> Copy for InEnvironment<G> where
     I::InternedProgramClauses: Copy
 {
 }
 
-impl<G: HasInterner> InEnvironment<G> {
+impl<G: HasInterner + TSerialize> InEnvironment<G> {
     /// Creates a new environment/goal pair.
     pub fn new(environment: &Environment<G::Interner>, goal: G) -> Self {
         InEnvironment {
@@ -224,7 +261,7 @@ impl<G: HasInterner> InEnvironment<G> {
     pub fn map<OP, H>(self, op: OP) -> InEnvironment<H>
     where
         OP: FnOnce(G) -> H,
-        H: HasInterner<Interner = G::Interner>,
+        H: HasInterner<Interner = G::Interner> + TSerialize,
     {
         InEnvironment {
             environment: self.environment,
@@ -233,12 +270,16 @@ impl<G: HasInterner> InEnvironment<G> {
     }
 }
 
-impl<G: HasInterner> HasInterner for InEnvironment<G> {
+impl<G: HasInterner + TSerialize> HasInterner for InEnvironment<G> {
     type Interner = G::Interner;
 }
 
 /// Different signed int types.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum IntTy {
     Isize,
@@ -250,7 +291,11 @@ pub enum IntTy {
 }
 
 /// Different unsigned int types.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum UintTy {
     Usize,
@@ -262,7 +307,11 @@ pub enum UintTy {
 }
 
 /// Different kinds of float types.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum FloatTy {
     F32,
@@ -270,7 +319,11 @@ pub enum FloatTy {
 }
 
 /// Types of scalar values.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum Scalar {
     Bool,
@@ -281,7 +334,11 @@ pub enum Scalar {
 }
 
 /// Whether a function is safe or not.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum Safety {
     /// Safe
     Safe,
@@ -290,7 +347,11 @@ pub enum Safety {
 }
 
 /// Whether a type is mutable or not.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum Mutability {
     /// Mutable
     Mut,
@@ -306,6 +367,10 @@ pub enum Mutability {
 /// `Goal(!U1)` (the quantifier was moved to the environment and replaced with a universe index)
 /// See <https://rustc-dev-guide.rust-lang.org/borrow_check/region_inference.html#placeholders-and-universes> for more.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct UniverseIndex {
     /// The counter for the universe index, starts with 0.
     pub counter: usize,
@@ -338,7 +403,11 @@ impl UniverseIndex {
 /// value (and vice versa). When used as a folder -- i.e., from
 /// outside this module -- converts from "canonical" universes to the
 /// original (but see the `UMapToCanonical` folder).
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct UniverseMap {
     /// A reverse map -- for each universe Ux that appears in
     /// `quantified`, the corresponding universe in the original was
@@ -362,6 +431,10 @@ impl UniverseMap {
 
 /// The id for an Abstract Data Type (i.e. structs, unions and enums).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct AdtId<I: Interner>(pub I::InternedAdtId);
 
 /// The id of a trait definition; could be used to load the trait datum by
@@ -369,14 +442,26 @@ pub struct AdtId<I: Interner>(pub I::InternedAdtId);
 ///
 /// [`trait_datum`]: ../chalk_solve/trait.RustIrDatabase.html#tymethod.trait_datum
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct TraitId<I: Interner>(pub I::DefId);
 
 /// The id for an impl.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ImplId<I: Interner>(pub I::DefId);
 
 /// Id for a specific clause.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ClauseId<I: Interner>(pub I::DefId);
 
 /// The id for the associated type member of a trait. The details of the type
@@ -384,32 +469,60 @@ pub struct ClauseId<I: Interner>(pub I::DefId);
 ///
 /// [`associated_ty_data`]: ../chalk_solve/trait.RustIrDatabase.html#tymethod.associated_ty_data
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct AssocTypeId<I: Interner>(pub I::DefId);
 
 /// Id for an opaque type.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct OpaqueTyId<I: Interner>(pub I::DefId);
 
 /// Function definition id.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct FnDefId<I: Interner>(pub I::DefId);
 
 /// Id for Rust closures.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ClosureId<I: Interner>(pub I::DefId);
 
 /// Id for Rust generators.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct GeneratorId<I: Interner>(pub I::DefId);
 
 /// Id for foreign types.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ForeignDefId<I: Interner>(pub I::DefId);
 
 impl_debugs!(ImplId, ClauseId);
 
 /// A Rust type. The actual type data is stored in `TyKind`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct Ty<I: Interner> {
     interned: I::InternedType,
 }
@@ -522,6 +635,10 @@ impl<I: Interner> Ty<I> {
 
 /// Contains the data for a Ty
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct TyData<I: Interner> {
     /// The kind
     pub kind: TyKind<I>,
@@ -531,6 +648,10 @@ pub struct TyData<I: Interner> {
 
 bitflags! {
     /// Contains flags indicating various properties of a Ty
+    #[cfg_attr(
+        feature = "tserialize",
+        derive(TS, Serialize)
+    )]
     pub struct TypeFlags : u16 {
         /// Does the type contain an InferenceVar
         const HAS_TY_INFER                = 1;
@@ -578,6 +699,10 @@ bitflags! {
 }
 /// Type data, which holds the actual type information.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum TyKind<I: Interner> {
     /// Abstract data types, i.e., structs, unions, or enumerations.
     /// For example, a type like `Vec<T>`.
@@ -774,7 +899,11 @@ impl<I: Interner> TyKind<I> {
 /// The variables `'c` and `'d` both have debruijn index of 0 because
 /// they appear in the *innermost* binder enclosing the `...`. The
 /// indices identify the location *within* that binder.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct BoundVar {
     /// Debruijn index, which identifies the binder.
     pub debruijn: DebruijnIndex,
@@ -865,7 +994,11 @@ impl BoundVar {
 /// `BoundVar(0)` (as the `for` is the innermost binder).
 ///
 /// [de Bruijn index]: https://en.wikipedia.org/wiki/De_Bruijn_index
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct DebruijnIndex {
     depth: u32,
 }
@@ -1024,6 +1157,10 @@ impl DebruijnIndex {
 /// a bound type with debruijn index 1 (i.e., skipping through one
 /// level of binder).
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct DynTy<I: Interner> {
     /// The unknown self type.
     pub bounds: Binders<QuantifiedWhereClauses<I>>,
@@ -1040,7 +1177,11 @@ where
 }
 
 /// A type, lifetime or constant whose value is being inferred.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct InferenceVar {
     index: u32,
 }
@@ -1079,6 +1220,10 @@ impl InferenceVar {
 
 /// A function signature.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, HasInterner, Debug)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct FnSig<I: Interner> {
     pub abi: I::FnAbi,
@@ -1087,6 +1232,10 @@ pub struct FnSig<I: Interner> {
 }
 /// A wrapper for the substs on a Fn.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner, TypeFoldable, TypeVisitable)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct FnSubst<I: Interner>(pub Substitution<I>);
 
 impl<I: Interner> Copy for FnSubst<I> where I::InternedSubstitution: Copy {}
@@ -1094,6 +1243,10 @@ impl<I: Interner> Copy for FnSubst<I> where I::InternedSubstitution: Copy {}
 /// for<'a...'z> X -- all binders are instantiated at once,
 /// and we use deBruijn indices within `self.ty`
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct FnPointer<I: Interner> {
     pub num_binders: usize,
@@ -1129,6 +1282,10 @@ impl<I: Interner> FnPointer<I> {
 
 /// Constants.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct Const<I: Interner> {
     interned: I::InternedConst,
 }
@@ -1183,6 +1340,10 @@ impl<I: Interner> Const<I> {
 
 /// Constant data, containing the constant's type and value.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ConstData<I: Interner> {
     /// Type that holds the constant.
     pub ty: Ty<I>,
@@ -1192,6 +1353,10 @@ pub struct ConstData<I: Interner> {
 
 /// A constant value, not necessarily concrete.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum ConstValue<I: Interner> {
     /// Bound var (e.g. a parameter).
     BoundVar(BoundVar),
@@ -1215,6 +1380,10 @@ impl<I: Interner> ConstData<I> {
 /// Concrete constant, whose value is known (as opposed to
 /// inferred constants and placeholders).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ConcreteConst<I: Interner> {
     /// The interned constant.
     pub interned: I::InternedConcreteConst,
@@ -1228,7 +1397,11 @@ impl<I: Interner> ConcreteConst<I> {
 }
 
 /// A Rust lifetime.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct Lifetime<I: Interner> {
     interned: I::InternedLifetime,
 }
@@ -1306,6 +1479,10 @@ impl<I: Interner> Lifetime<I> {
 
 /// Lifetime data, including what kind of lifetime it is and what it points to.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum LifetimeData<I: Interner> {
     /// See TyKind::BoundVar.
     BoundVar(BoundVar),
@@ -1333,6 +1510,10 @@ impl<I: Interner> LifetimeData<I> {
 /// Two indexes are required, the one of the universe itself
 /// and the relative index inside the universe.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct PlaceholderIndex {
     /// Index *of* the universe.
     pub ui: UniverseIndex,
@@ -1371,6 +1552,10 @@ impl PlaceholderIndex {
 /// `Index` impl for. `i` would have a `TyVariableKind` of `Integer` to guide the
 /// inference process.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum TyVariableKind {
     General,
@@ -1380,6 +1565,10 @@ pub enum TyVariableKind {
 
 /// The "kind" of variable. Type, lifetime or constant.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub enum VariableKind<I: Interner> {
     Ty(TyVariableKind),
@@ -1417,6 +1606,10 @@ impl<I: Interner> VariableKind<I> {
 
 /// A generic argument, see `GenericArgData` for more information.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct GenericArg<I: Interner> {
     interned: I::InternedGenericArg,
 }
@@ -1513,6 +1706,10 @@ impl<I: Interner> GenericArg<I> {
 
 /// Generic arguments data.
 #[derive(Clone, PartialEq, Eq, Hash, TypeVisitable, TypeFoldable, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum GenericArgData<I: Interner> {
     /// Type argument
     Ty(Ty<I>),
@@ -1539,6 +1736,10 @@ impl<I: Interner> GenericArgData<I> {
 
 /// A value with an associated variable kind.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct WithKind<I: Interner, T> {
     /// The associated variable kind.
     pub kind: VariableKind<I>,
@@ -1598,6 +1799,10 @@ pub type CanonicalVarKind<I: Interner> = WithKind<I, UniverseIndex>;
 
 /// An alias, which is a trait indirection such as a projection or opaque type.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum AliasTy<I: Interner> {
     /// An associated type projection.
     Projection(ProjectionTy<I>),
@@ -1628,6 +1833,10 @@ impl<I: Interner> AliasTy<I> {
 
 /// A projection `<P0 as TraitName<P1..Pn>>::AssocItem<Pn+1..Pm>`.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ProjectionTy<I: Interner> {
     /// The id for the associated type member.
     pub associated_ty_id: AssocTypeId<I>,
@@ -1639,6 +1848,10 @@ impl<I: Interner> Copy for ProjectionTy<I> where I::InternedSubstitution: Copy {
 
 /// An opaque type `opaque type T<..>: Trait = HiddenTy`.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct OpaqueTy<I: Interner> {
     /// The id for the opaque type.
     pub opaque_ty_id: OpaqueTyId<I>,
@@ -1655,6 +1868,10 @@ impl<I: Interner> Copy for OpaqueTy<I> where I::InternedSubstitution: Copy {}
 /// - `<P0 as Trait<P1..Pn>>` (e.g. `i32 as Copy`), which casts the type to
 ///   that specific trait.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct TraitRef<I: Interner> {
     /// The trait id.
     pub trait_id: TraitId<I>,
@@ -1692,6 +1909,10 @@ impl<I: Interner> TraitRef<I> {
 /// Lifetime outlives, which for `'a: 'b`` checks that the lifetime `'a`
 /// is a superset of the value of `'b`.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct LifetimeOutlives<I: Interner> {
     pub a: Lifetime<I>,
@@ -1703,6 +1924,10 @@ impl<I: Interner> Copy for LifetimeOutlives<I> where I::InternedLifetime: Copy {
 /// Type outlives, which for `T: 'a` checks that the type `T`
 /// lives at least as long as the lifetime `'a`
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct TypeOutlives<I: Interner> {
     /// The type which must outlive the given lifetime.
     pub ty: Ty<I>,
@@ -1719,6 +1944,10 @@ where
 
 /// Where clauses that can be written by a Rust programmer.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeSuperVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum WhereClause<I: Interner> {
     /// Type implements a trait.
     Implemented(TraitRef<I>),
@@ -1740,6 +1969,10 @@ where
 
 /// Checks whether a type or trait ref is well-formed.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum WellFormed<I: Interner> {
     /// A predicate which is true when some trait ref is well-formed.
     /// For example, given the following trait definitions:
@@ -1778,6 +2011,10 @@ where
 
 /// Checks whether a type or trait ref can be derived from the contents of the environment.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum FromEnv<I: Interner> {
     /// A predicate which enables deriving everything which should be true if we *know* that
     /// some trait ref is well-formed. For example given the above trait definitions, we can use
@@ -1817,6 +2054,10 @@ where
 /// logical statement. As much as possible, the Chalk solver should avoid
 /// decomposing this enum, and instead treat its values opaquely.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeSuperVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum DomainGoal<I: Interner> {
     /// Simple goal that is true if the where clause is true.
     Holds(WhereClause<I>),
@@ -1976,6 +2217,10 @@ impl<I: Interner> DomainGoal<I> {
 
 /// Equality goal: tries to prove that two values are equal.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct EqGoal<I: Interner> {
     pub a: GenericArg<I>,
@@ -1986,6 +2231,10 @@ impl<I: Interner> Copy for EqGoal<I> where I::InternedGenericArg: Copy {}
 
 /// Subtype goal: tries to prove that `a` is a subtype of `b`
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct SubtypeGoal<I: Interner> {
     pub a: Ty<I>,
@@ -1999,6 +2248,10 @@ impl<I: Interner> Copy for SubtypeGoal<I> where I::InternedType: Copy {}
 /// **match it to an impl** and that impl has a `type Foo = V` where
 /// `U = V`.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct Normalize<I: Interner> {
     pub alias: AliasTy<I>,
@@ -2014,6 +2267,10 @@ where
 
 /// Proves **equality** between an alias and a type.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 #[allow(missing_docs)]
 pub struct AliasEq<I: Interner> {
     pub alias: AliasTy<I>,
@@ -2039,6 +2296,10 @@ impl<I: Interner> HasInterner for AliasEq<I> {
 /// (IOW, we use deBruijn indices, where binders are introduced in reverse order
 /// of `self.binders`.)
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct Binders<T: HasInterner> {
     /// The binders that quantify over the value.
     pub binders: VariableKinds<T::Interner>,
@@ -2272,6 +2533,10 @@ where
 /// `conditions = cond_1 && cond_2 && ...` is the conjunction of the individual
 /// conditions.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ProgramClauseImplication<I: Interner> {
     /// The consequence of the clause, which holds if the conditions holds.
     pub consequence: DomainGoal<I>,
@@ -2287,7 +2552,11 @@ pub struct ProgramClauseImplication<I: Interner> {
 }
 
 /// Specifies how important an implication is.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum ClausePriority {
     /// High priority, the solver should prioritize this.
     High,
@@ -2308,6 +2577,10 @@ impl std::ops::BitAnd for ClausePriority {
 
 /// Contains the data for a program clause.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ProgramClauseData<I: Interner>(pub Binders<ProgramClauseImplication<I>>);
 
 impl<I: Interner> ProgramClauseImplication<I> {
@@ -2341,7 +2614,11 @@ impl<I: Interner> ProgramClauseData<I> {
 }
 
 /// A program clause is a logic expression used to describe a part of the program.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ProgramClause<I: Interner> {
     interned: I::InternedProgramClause,
 }
@@ -2377,6 +2654,10 @@ impl<I: Interner> ProgramClause<I> {
 /// first appearance; the kind/universe of the variable is recorded in the
 /// `binders` field.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct Canonical<T: HasInterner> {
     /// The item that is canonicalized.
     pub value: T,
@@ -2396,6 +2677,10 @@ impl<T: HasInterner> HasInterner for Canonical<T> {
 ///
 /// To produce one of these values, use the `u_canonicalize` method.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct UCanonical<T: HasInterner> {
     /// The wrapped `Canonical`.
     pub canonical: Canonical<T>,
@@ -2455,6 +2740,10 @@ impl<T: HasInterner> UCanonical<T> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 /// A general goal; this is the full range of questions you can pose to Chalk.
 pub struct Goal<I: Interner> {
     interned: I::InternedGoal,
@@ -2552,6 +2841,10 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 /// A general goal; this is the full range of questions you can pose to Chalk.
 pub enum GoalData<I: Interner> {
     /// Introduces a binding at depth 0, shifting other bindings up
@@ -2608,7 +2901,11 @@ impl<I: Interner> GoalData<I> {
 }
 
 /// Kinds of quantifiers in the logic, such as `forall` and `exists`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum QuantifierKind {
     /// Universal quantifier `ForAll`.
     ///
@@ -2635,6 +2932,10 @@ pub enum QuantifierKind {
 /// for later checking. This allows for decoupling between type and region
 /// checking in the compiler.
 #[derive(Clone, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner, Zip)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub enum Constraint<I: Interner> {
     /// Outlives constraint `'a: 'b`, indicating that the value of `'a` must be
     /// a superset of the value of `'b`.
@@ -2858,6 +3159,10 @@ macro_rules! interned_slice_common {
     ($seq:ident, $data:ident => $elem:ty, $intern:ident => $interned:ident) => {
         /// List of interned elements.
         #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
+        #[cfg_attr(
+            feature = "tserialize",
+            derive(TS, Serialize)
+        )]
         pub struct $seq<I: Interner> {
             interned: I::$interned,
         }
@@ -3016,6 +3321,10 @@ impl<I: Interner> Variances<I> {
 /// and the constraints represents any region constraints that must
 /// additionally be solved.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct ConstrainedSubst<I: Interner> {
     /// The substitution that is being constrained.
     ///
@@ -3028,6 +3337,10 @@ pub struct ConstrainedSubst<I: Interner> {
 
 /// The resulting substitution after solving a goal.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TypeFoldable, TypeVisitable, HasInterner)]
+#[cfg_attr(
+    feature = "tserialize",
+    derive(TS, Serialize)
+)]
 pub struct AnswerSubst<I: Interner> {
     /// The substitution result.
     ///

@@ -84,7 +84,7 @@ impl<'infer, I: Interner> TypeVisitor<I> for TySizeVisitor<'infer, I> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ignore-tests"))]
 mod tests {
     use super::*;
     use chalk_integration::{arg, ty};

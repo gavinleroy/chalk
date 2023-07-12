@@ -1,3 +1,4 @@
+use argus::proof_tree::ProofTree;
 use rustc_hash::FxHashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -8,7 +9,6 @@ mod cache;
 pub mod search_graph;
 pub mod stack;
 
-use crate::proof_tree::ProofTree;
 use crate::solve::TracedFallible;
 pub use cache::{Cache, FromCache};
 use search_graph::{DepthFirstNumber, SearchGraph};

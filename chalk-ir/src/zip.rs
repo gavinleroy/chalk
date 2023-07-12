@@ -295,7 +295,7 @@ eq_zip!(I => ClausePriority);
 eq_zip!(I => Mutability);
 eq_zip!(I => Scalar);
 
-impl<T: HasInterner<Interner = I> + Zip<I>, I: Interner> Zip<I> for InEnvironment<T> {
+impl<T: HasInterner<Interner = I> + Zip<I> + TSerialize, I: Interner> Zip<I> for InEnvironment<T> {
     fn zip_with<Z: Zipper<I>>(
         zipper: &mut Z,
         variance: Variance,

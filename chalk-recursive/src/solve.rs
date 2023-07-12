@@ -4,7 +4,7 @@ use crate::fixed_point::{FromCache, Minimums};
 use crate::UCanonicalGoal;
 use chalk_ir::could_match::CouldMatch;
 use chalk_ir::fold::TypeFoldable;
-use chalk_ir::interner::{HasInterner, Interner};
+use chalk_ir::interner::{HasInterner, Interner, TSerialize};
 use chalk_ir::{
     Canonical, ClausePriority, DomainGoal, Fallible, Floundered, Goal, GoalData, InEnvironment,
     NoSolution, ProgramClause, ProgramClauseData, Substitution, UCanonical,
@@ -15,7 +15,7 @@ use chalk_solve::infer::InferenceTable;
 use chalk_solve::{Guidance, RustIrDatabase, Solution};
 use tracing::{debug, instrument};
 
-use crate::proof_tree::*;
+use argus::proof_tree::*;
 
 #[derive(Debug, Clone)]
 pub struct TracedFallible<I: Interner> {
@@ -236,7 +236,6 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
             nested_trees.push(ProofTree::Introducing(
                 EdgeInfo::PCImplication(PCINode {
                     clause: implication.clone(),
-                    infer,
                 }),
                 Box::new(tree),
             ));
@@ -292,7 +291,7 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
         }
     }
 
-    fn new_inference_table<T: TypeFoldable<I> + HasInterner<Interner = I> + Clone>(
+    fn new_inference_table<T: TypeFoldable<I> + HasInterner<Interner = I> + Clone + TSerialize>(
         &self,
         ucanonical_goal: &UCanonical<InEnvironment<T>>,
     ) -> (InferenceTable<I>, Substitution<I>, InEnvironment<T>) {

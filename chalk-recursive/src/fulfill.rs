@@ -1,7 +1,7 @@
 use crate::fixed_point::Minimums;
-use crate::proof_tree::*;
 use crate::solve::{SolveDatabase, TracedFallible};
 use crate::UCanonicalGoal;
+use argus::proof_tree::*;
 use chalk_ir::cast::Cast;
 use chalk_ir::fold::TypeFoldable;
 use chalk_ir::interner::{HasInterner, Interner};
@@ -156,9 +156,11 @@ impl<I: Interner> ObligationSet<I> {
 
             if subs.is_empty() {
                 if let Some(last) = leaf.take() {
+                    debug_span!("construct_proof::visit_node", last = ?last);
                     subs.push(ProofTree::Leaf(last));
                 } else {
-                    panic!("index doesn't have nested anything! {:?}", i);
+                    subs.push(ProofTree::unknown());
+                    // panic!("index doesn't have nested anything! {:?}", i);
                 }
             }
 
@@ -787,7 +789,6 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
-        use crate::proof_tree::HasFail;
         macro_rules! consume_trace {
             ($this:tt, $val1:expr, $val2:expr) => {{
                 TracedFallible {

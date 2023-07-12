@@ -13,6 +13,9 @@ publish = false
 [features]
 bench = []
 
+[patch.crates-io]
+ts-rs = { git = "https://github.com/gavinleroy/ts-rs.git" }
+
 [dependencies]
 docopt = "1.1.0"
 itertools = "0.10.0"
@@ -21,14 +24,13 @@ salsa = "0.16.0"
 serde = "1.0"
 serde_derive = "1.0"
 
+chalk-ir = { version = "0.92.0-dev.0", path = "chalk-ir", features = ["tserialize"] }
+chalk-solve = { version = "0.92.0-dev.0", path = "chalk-solve", features = ["tserialize"] }
 chalk-derive = { version = "0.92.0-dev.0", path = "chalk-derive" }
 chalk-engine = { version = "0.92.0-dev.0", path = "chalk-engine" }
-chalk-ir = { version = "0.92.0-dev.0", path = "chalk-ir" }
-chalk-solve = { version = "0.92.0-dev.0", path = "chalk-solve" }
 chalk-recursive = { version = "0.92.0-dev.0", path = "chalk-recursive" }
-chalk-tracing = { version = "0.92.0-dev.0", path = "chalk-tracing" }
 chalk-parse = { version = "0.92.0-dev.0", path = "chalk-parse" }
-chalk-integration = { version = "0.92.0-dev.0", path = "chalk-integration" }
+# chalk-integration = { version = "0.92.0-dev.0", path = "chalk-integration" }
 
 [workspace]
 

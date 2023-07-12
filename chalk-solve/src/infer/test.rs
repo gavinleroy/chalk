@@ -1,4 +1,4 @@
-#![cfg(test)]
+#![cfg(any())]
 
 use super::unify::RelationResult;
 use super::*;

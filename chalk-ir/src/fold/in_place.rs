@@ -143,7 +143,7 @@ impl<T, U> Drop for VecMappedInPlace<T, U> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test))]
 mod tests {
     use std::fmt;
     use std::sync::{Arc, Mutex};

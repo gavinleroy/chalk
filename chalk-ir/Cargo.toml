@@ -9,7 +9,14 @@ readme = "README.md"
 keywords = ["compiler", "traits", "prolog"]
 edition = "2018"
 
+[features]
+default = ["tserialize"]
+tserialize = ["serde", "ts-rs"]
+
 [dependencies]
 lazy_static = "1.4.0"
 bitflags = "1.2.1"
 chalk-derive = { version = "0.92.0-dev.0", path = "../chalk-derive" }
+
+serde = { version = "=1.0.156", features = ["derive"], optional = true }
+ts-rs = { version = "6.2.0", optional = true }
