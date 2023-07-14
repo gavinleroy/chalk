@@ -1,10 +1,10 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
 use crate::solve::{SolveDatabase, SolveIteration, TracedFallible};
 use crate::UCanonicalGoal;
-use argus::proof_tree::ProofTree;
+
+use chalk_ir::Constraints;
 use chalk_ir::{interner::Interner, NoSolution};
 use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
-use chalk_ir::{Constraints, Fallible};
 use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase, Solution};
 use std::fmt;
 
@@ -56,15 +56,16 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
 
     fn initial_value(self, goal: &UCanonicalGoal<I>, coinductive_goal: bool) -> TracedFallible<I> {
         if coinductive_goal {
+            let solution = Solution::Unique(Canonical {
+                value: ConstrainedSubst {
+                    subst: goal.trivial_substitution(self.interner()),
+                    constraints: Constraints::empty(self.interner()),
+                },
+                binders: goal.canonical.binders.clone(),
+            });
             TracedFallible {
-                solution: Ok(Solution::Unique(Canonical {
-                    value: ConstrainedSubst {
-                        subst: goal.trivial_substitution(self.interner()),
-                        constraints: Constraints::empty(self.interner()),
-                    },
-                    binders: goal.canonical.binders.clone(),
-                })),
-                trace: todo!(),
+                solution: Ok(solution.clone()),
+                trace: solution.into(),
             }
         } else {
             TracedFallible {

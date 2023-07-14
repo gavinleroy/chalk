@@ -1,6 +1,6 @@
 use crate::fixed_point::Minimums;
 use crate::solve::{SolveDatabase, TracedFallible};
-use crate::UCanonicalGoal;
+
 use argus::proof_tree::*;
 use chalk_ir::cast::Cast;
 use chalk_ir::fold::TypeFoldable;
@@ -67,6 +67,7 @@ impl<I: Interner> ObligationSet<I> {
         })
     }
 
+    #[allow(dead_code)]
     fn register_iteration_substitution(&mut self, info: EdgeInfo<I>) {
         CURRENT_OBLIGATION.get(|idx| {
             let my_idx = *idx.unwrap();
@@ -76,6 +77,7 @@ impl<I: Interner> ObligationSet<I> {
         })
     }
 
+    #[allow(dead_code)]
     fn obligation_idx(&self, obl: &Obligation<I>) -> OIdx {
         self.obligation_map
             .iter()
@@ -353,7 +355,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     #[instrument(level = "debug", skip(solver, infer))]
     pub(super) fn new_with_clause(
         solver: &'s mut Solver,
-        mut infer: InferenceTable<I>,
+        infer: InferenceTable<I>,
         subst: Substitution<I>,
         canonical_goal: InEnvironment<DomainGoal<I>>,
         clause: &Binders<ProgramClauseImplication<I>>,
@@ -385,7 +387,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         debug!("the subst is {:?}", fulfill.subst);
 
-        if let Err(e) = fulfill.unify(
+        if let Err(_e) = fulfill.unify(
             &canonical_goal.environment,
             Variance::Invariant,
             &canonical_goal.goal,
@@ -396,7 +398,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         // if so, toss in all of its premises
         for condition in conditions.as_slice(fulfill.solver.interner()) {
-            if let Err(e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
+            if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
                 return Err(fulfill.obligations.construct_proof(Some(Err(NoSolution))));
             }
         }
@@ -421,7 +423,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         fluid_set!(CURRENT_OBLIGATION, fulfill.obligations.nil_idx);
 
-        if let Err(e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
+        if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
         {
             return Err(fulfill.obligations.construct_proof(Some(Err(NoSolution))));
         }
