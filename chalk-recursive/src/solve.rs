@@ -177,10 +177,11 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
         let mut clauses = vec![];
-        let enclose_trace = |tree| {
+        let enclose_trace = |tree, clauses| {
             ProofTree::Introducing(
                 EdgeInfo::UsingClauses {
                     goal: canonical_goal.clone(),
+                    clauses,
                 },
                 Box::new(tree),
             )
@@ -194,19 +195,45 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
                 &canonical_goal.canonical.value.goal,
             )
         };
+
+        let mut considered_clauses = vec![];
+
+        let mut extend_considered_with = |clauses: Vec<ProgramClause<I>>, kind| {
+            considered_clauses.extend(clauses.into_iter().map(|clause| {
+                let is_could_match = could_match(&clause);
+                ConsideredClause {
+                    clause,
+                    could_match: is_could_match,
+                    kind,
+                }
+            }))
+        };
+
+        extend_considered_with(db.custom_clauses(), ClauseKind::ForEnv);
         clauses.extend(db.custom_clauses().into_iter().filter(could_match));
         match program_clauses_that_could_match(db, canonical_goal) {
-            Ok(goal_clauses) => clauses.extend(goal_clauses.into_iter().filter(could_match)),
+            Ok(goal_clauses) => {
+                extend_considered_with(goal_clauses.clone(), ClauseKind::CouldMatch);
+                clauses.extend(goal_clauses.into_iter().filter(could_match))
+            }
             Err(Floundered) => {
                 return TracedFallible {
                     solution: Ok(Solution::Ambig(Guidance::Unknown)),
                     // TODO: introduce a notion of floundering in the tree
-                    trace: enclose_trace(Floundered.into()),
+                    trace: enclose_trace(Floundered.into(), considered_clauses),
                 };
             }
         }
 
         let (infer, subst, goal) = self.new_inference_table(canonical_goal);
+
+        extend_considered_with(
+            db.program_clauses_for_env(&goal.environment)
+                .iter(db.interner())
+                .cloned()
+                .collect::<Vec<_>>(),
+            ClauseKind::ForEnv,
+        );
         clauses.extend(
             db.program_clauses_for_env(&goal.environment)
                 .iter(db.interner())
@@ -270,10 +297,13 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
         let trace = if nested_trees.is_empty() {
             None
         } else {
-            Some(enclose_trace(ProofTree::Nested(NestedNode {
-                subgoals: nested_trees,
-                kind: SubGoalKind::Disjunction,
-            })))
+            Some(enclose_trace(
+                ProofTree::Nested(NestedNode {
+                    subgoals: nested_trees,
+                    kind: SubGoalKind::Disjunction,
+                }),
+                considered_clauses,
+            ))
         };
 
         if let Some((s, _)) = cur_solution {
