@@ -10,7 +10,6 @@ keywords = ["compiler", "traits", "prolog"]
 edition = "2018"
 
 [features]
-default = ["tserialize"]
 tserialize = ["serde", "ts-rs"]
 
 [dependencies]

@@ -32,6 +32,6 @@ ts-rs = { version = "6.2.0", optional = true }
 # chalk-integration = { path = "../chalk-integration" }
 
 [features]
-default = ["tracing-full", "tserialize"]
+default = ["tracing-full"]
 tserialize = ["serde", "ts-rs"]
 tracing-full = ["tracing-subscriber", "tracing-tree"]

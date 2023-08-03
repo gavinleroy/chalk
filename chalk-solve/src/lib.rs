@@ -22,6 +22,15 @@ pub mod solve;
 pub mod split;
 pub mod wf;
 
+pub trait FromCache<K>: Clone
+where
+    K: std::hash::Hash + Eq + Debug,
+{
+    fn cached_value(&self, _: K) -> Self {
+        self.clone()
+    }
+}
+
 /// Trait representing access to a database of rust types.
 ///
 /// # `*_name` methods

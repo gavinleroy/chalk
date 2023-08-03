@@ -28,13 +28,13 @@ extern crate bitflags;
 
 // ----
 
-#[allow(dead_code)]
-const fn static_panic() {
-    assert!(false);
-}
+// #[allow(dead_code)]
+// const fn static_panic() {
+//     assert!(false);
+// }
 
-#[cfg(not(feature = "tserialize"))]
-const _: () = static_panic();
+// #[cfg(not(feature = "tserialize"))]
+// const _: () = static_panic();
 
 /// Uninhabited (empty) type, used in combination with `PhantomData`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

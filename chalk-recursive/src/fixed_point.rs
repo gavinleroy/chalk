@@ -1,5 +1,3 @@
-
-
 use std::fmt::Debug;
 use std::hash::Hash;
 use tracing::debug;
@@ -9,8 +7,9 @@ mod cache;
 pub mod search_graph;
 pub mod stack;
 
+use chalk_solve::FromCache;
 
-pub use cache::{Cache, FromCache};
+pub use cache::Cache;
 use search_graph::{DepthFirstNumber, SearchGraph};
 use stack::{Stack, StackDepth};
 
@@ -49,6 +48,7 @@ where
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> V;
     fn reached_fixed_point(self, old_value: &V, new_value: &V) -> bool;
+    fn combine_values(self, old_value: &V, new_value: &mut V);
     fn error_value(self) -> V;
 }
 

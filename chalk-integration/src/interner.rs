@@ -18,6 +18,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use string_cache::DefaultAtom;
 
+use serde::Serialize;
+use ts_rs::TS;
+
 pub type Identifier = DefaultAtom;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -52,7 +55,7 @@ impl Debug for ChalkFnAbi {
 
 /// The default "interner" and the only interner used by chalk
 /// itself. In this interner, no interning actually occurs.
-#[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(TS, Serialize, Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct ChalkIr;
 
 impl Interner for ChalkIr {

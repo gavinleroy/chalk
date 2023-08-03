@@ -1,6 +1,6 @@
 use crate::RustIrDatabase;
 use chalk_derive::HasInterner;
-use chalk_ir::interner::Interner;
+use chalk_ir::interner::{Interner, TSerialize};
 use chalk_ir::*;
 use std::fmt;
 use tracing::debug;
@@ -16,7 +16,7 @@ pub mod truncate;
 /// A (possible) solution for a proposed goal.
 #[derive(Clone, Debug, PartialEq, Eq, HasInterner)]
 #[cfg_attr(feature = "tserialize", derive(TS, Serialize))]
-pub enum Solution<I: Interner + TS> {
+pub enum Solution<I: Interner + TSerialize> {
     /// The goal indeed holds, and there is a unique value for all existential
     /// variables. In this case, we also record a set of lifetime constraints
     /// which must also hold for the goal to be valid.
@@ -33,7 +33,7 @@ pub enum Solution<I: Interner + TS> {
 /// solutions), we issue a set of *guidance* back to type inference.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "tserialize", derive(TS, Serialize))]
-pub enum Guidance<I: Interner + TS> {
+pub enum Guidance<I: Interner + TSerialize> {
     /// The existential variables *must* have the given values if the goal is
     /// ever to hold, but that alone isn't enough to guarantee the goal will
     /// actually hold.

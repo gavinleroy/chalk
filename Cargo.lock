@@ -57,6 +57,7 @@ dependencies = [
  "dot",
  "fluid-let",
  "index_vec",
+ "itertools 0.11.0",
  "lazy_static",
  "memoize",
  "rand",
@@ -134,6 +135,7 @@ version = "0.92.0-dev.0"
 dependencies = [
  "chalk-derive",
  "chalk-engine",
+ "chalk-integration",
  "chalk-ir",
  "chalk-parse",
  "chalk-recursive",
@@ -141,7 +143,7 @@ dependencies = [
  "diff",
  "docopt",
  "expect-test",
- "itertools",
+ "itertools 0.10.1",
  "pretty_assertions",
  "regex",
  "rustyline",
@@ -184,8 +186,10 @@ dependencies = [
  "chalk-solve",
  "indexmap",
  "salsa",
+ "serde",
  "string_cache",
  "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -219,7 +223,9 @@ dependencies = [
  "chalk-solve",
  "fluid-let",
  "index_vec",
+ "itertools 0.11.0",
  "rustc-hash",
+ "serde",
  "tracing",
  "ts-rs",
 ]
@@ -232,7 +238,7 @@ dependencies = [
  "chalk-ir",
  "ena",
  "indexmap",
- "itertools",
+ "itertools 0.10.1",
  "lazy_static",
  "petgraph",
  "rustc-hash",
@@ -451,6 +457,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -467,7 +482,7 @@ dependencies = [
  "bit-set",
  "diff",
  "ena",
- "itertools",
+ "itertools 0.10.1",
  "lalrpop-util",
  "petgraph",
  "pico-args",

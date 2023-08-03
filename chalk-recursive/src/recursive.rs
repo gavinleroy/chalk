@@ -1,5 +1,5 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
-use crate::solve::{SolveDatabase, SolveIteration, TracedFallible};
+use crate::solve::{SolveDatabase, SolveIteration};
 use crate::UCanonicalGoal;
 
 use chalk_ir::Constraints;
@@ -7,6 +7,8 @@ use chalk_ir::{interner::Interner, NoSolution};
 use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
 use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase, Solution};
 use std::fmt;
+
+use argus::proof_tree::TracedFallible;
 
 /// A Solver is the basic context in which you can propose goals for a given
 /// program. **All questions posed to the solver are in canonical, closed form,
@@ -101,6 +103,10 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
                 Err(_) => false,
             }
         }
+    }
+
+    fn combine_values(self, old_value: &TracedFallible<I>, new_value: &mut TracedFallible<I>) {
+        todo!()
     }
 
     fn error_value(self) -> TracedFallible<I> {

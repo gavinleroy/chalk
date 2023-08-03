@@ -5,14 +5,7 @@ use std::sync::{Arc, Mutex};
 use tracing::debug;
 use tracing::instrument;
 
-pub trait FromCache<K>: Clone
-where
-    K: Hash + Eq + Debug,
-{
-    fn cached_value(&self, _: K) -> Self {
-        self.clone()
-    }
-}
+use chalk_solve::FromCache;
 
 /// The "cache" stores results for goals that we have completely solved.
 /// Things are added to the cache when we have completely processed their
