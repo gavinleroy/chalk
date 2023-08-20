@@ -6,8 +6,8 @@ use chalk_ir::could_match::CouldMatch;
 use chalk_ir::fold::TypeFoldable;
 use chalk_ir::interner::{HasInterner, Interner, TSerialize};
 use chalk_ir::{
-    Canonical, ClausePriority, DomainGoal, Fallible, Floundered, Goal, GoalData, InEnvironment,
-    NoSolution, ProgramClause, ProgramClauseData, Substitution, UCanonical,
+    Canonical, ClausePriority, DomainGoal, Floundered, Goal, GoalData, InEnvironment, NoSolution,
+    ProgramClause, ProgramClauseData, Substitution, UCanonical,
 };
 use chalk_solve::clauses::program_clauses_that_could_match;
 use chalk_solve::debug_span;
@@ -15,9 +15,7 @@ use chalk_solve::infer::InferenceTable;
 use chalk_solve::{Guidance, RustIrDatabase, Solution};
 use tracing::{debug, instrument};
 
-use itertools::Itertools;
-
-use argus::proof_tree::*;
+use argus::{maybe::Either, proof_tree::*};
 
 pub(super) trait SolveDatabase<I: Interner>: Sized {
     fn solve_goal(
@@ -50,7 +48,7 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
         if !should_continue() {
             return TracedFallible {
                 solution: Ok(Solution::Ambig(Guidance::Unknown)),
-                trace: ProofTree::proof_halted(),
+                trace: ProofTree::halted(),
             };
         }
 
@@ -209,16 +207,13 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
         // inline to avoid borrow conflicts, iterate over each
         // of the considered clauses and filter by those which
         // "could match".
-        let clauses_enumerated = builder
-            .clauses
-            .iter_enumerated()
-            .filter_map(|(idx, considered)| {
-                considered.could_match.then_some((idx, &considered.clause))
-            })
-            // FIXME(gavinleroy): does this work? You need to ask on Zulip to see if
-            //      anyone has any intuition as to why it would or wouldn't.
-            // .unique_by(|&(_, considered)| considered)
-            ;
+        let clauses_enumerated =
+            builder
+                .clauses
+                .iter_enumerated()
+                .filter_map(|(idx, considered)| {
+                    considered.could_match.then_some((idx, &considered.clause))
+                });
 
         // --> for program_clause in clauses {
         for (clause_idx, program_clause) in clauses_enumerated {
@@ -239,7 +234,7 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
                 };
 
             // Store the subtree for the specific clause.
-            builder.subnodes.insert(clause_idx, tree);
+            builder.subnodes.insert(clause_idx, Either::yes(tree));
 
             if let (Ok(solution), priority) = res {
                 debug!(?solution, ?priority, "Ok");

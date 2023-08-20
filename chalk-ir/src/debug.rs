@@ -652,7 +652,8 @@ pub struct SeparatorTraitRef<'me, I: Interner> {
 
 /// Helper struct for showing debug output for the `SeperatorTraitRef`.
 pub struct SeparatorTraitRefDebug<'a, 'me, I: Interner> {
-    separator_trait_ref: &'a SeparatorTraitRef<'me, I>,
+    /// TODO(gavinleroy) Nothing to see here >:)
+    pub separator_trait_ref: &'a SeparatorTraitRef<'me, I>,
     interner: I,
 }
 

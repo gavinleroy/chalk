@@ -38,10 +38,14 @@ struct FulfillmentBuilder<I: Interner> {
 }
 
 impl<I: Interner> FulfillmentBuilder<I> {
-    fn new(root_kind: FulfillmentKind<I>) -> Self {
+    fn new(
+        root_kind: FulfillmentKind<I>,
+        infer: InferenceTable<I>,
+        subst: Substitution<I>,
+    ) -> Self {
         Self {
             obligations: Vec::default(),
-            builder: af::Fulfillment::new(root_kind),
+            builder: af::Fulfillment::new(root_kind, infer, subst),
         }
     }
 
@@ -57,16 +61,22 @@ impl<I: Interner> FulfillmentBuilder<I> {
         })
     }
 
-    fn push_obligation(&mut self, obligation: Obligation<I>) -> af::IdxKind {
-        let obl = match obligation.clone() {
-            Obligation::Prove(env_goal) => af::Obligation::Prove(env_goal),
-            Obligation::Refute(env_goal) => af::Obligation::Refute(env_goal),
+    fn push_obligation(
+        &mut self,
+        obligation: Obligation<I>,
+        infer: &InferenceTable<I>,
+        subst: &Substitution<I>,
+    ) -> af::IdxKind {
+        let (kind, goal) = match &obligation {
+            Obligation::Prove(env_goal) => (af::ObligationKind::Prove, env_goal),
+            Obligation::Refute(env_goal) => (af::ObligationKind::Refute, env_goal),
         };
+
+        let obl = af::Obligation::new(goal, infer, subst, kind);
 
         CURRENT_ITEM.get(|idx_opt| {
             let from = idx_opt.copied().unwrap_or(af::IdxKind::CurrentRoot);
             let idx = self.builder.add_obligation(from, obl);
-            // Don't forget to actually store them in the vector.
             self.obligations.push((idx, obligation));
             af::IdxKind::Obligation(idx)
         })
@@ -81,13 +91,13 @@ impl<I: Interner> FulfillmentBuilder<I> {
     }
 
     fn store_result(&mut self, from: af::ObligationIdx, result: af::ObligationResult<I>) {
-        self.builder.store_result(from, result);
+        self.builder.add_result(from, result);
     }
 
     fn into_proof(self) -> ProofTree<I> {
-        // TODO(gavinleroy) verify the structure.
-
-        if self.builder.obligation_results.is_empty() && !self.builder.obligations.is_empty() {
+        if self.builder.has_obligations() && !self.builder.has_obligation_results() {
+            // IFF there are no obligation results, but there does exist obligations.
+            // THEN: there must exist a failure reason, e.g., it can't be Unknown.
             assert!(
                 !matches!(self.builder.did_fail, af::FulfillFailKind::Unknown),
                 "Fulfillment Builders must have a failure reason {:#?}",
@@ -191,6 +201,14 @@ where
     res.map(|v| v.into())
 }
 
+fn positive_kind<I: Interner>(sol: &Fallible<PositiveSolution<I>>) -> af::OblResultKind<I> {
+    af::OblResultKind::Positive(map_into(sol.clone()))
+}
+
+fn negative_kind<I: Interner>(sol: &Fallible<NegativeSolution>) -> af::OblResultKind<I> {
+    af::OblResultKind::Negative(map_into(sol.clone()))
+}
+
 fn canonicalize<I: Interner, T>(
     infer: &mut InferenceTable<I>,
     interner: I,
@@ -282,12 +300,16 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     ) -> TracedCreate<Self, I> {
         let mut fulfill = Fulfill {
             solver,
-            infer,
-            subst,
-            obligations: FulfillmentBuilder::new(FulfillmentKind::WithClause {
-                goal: canonical_goal.clone(),
-                clause: clause.clone(),
-            }),
+            infer: infer.clone(),
+            subst: subst.clone(),
+            obligations: FulfillmentBuilder::new(
+                FulfillmentKind::WithClause {
+                    goal: canonical_goal.clone(),
+                    clause: clause.clone(),
+                },
+                infer,
+                subst,
+            ),
             constraints: FxHashSet::default(),
             cannot_prove: false,
         };
@@ -341,11 +363,15 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     ) -> TracedCreate<Self, I> {
         let mut fulfill = Fulfill {
             solver,
-            infer,
-            subst,
-            obligations: FulfillmentBuilder::new(FulfillmentKind::WithSimplification {
-                goal: canonical_goal.clone(),
-            }),
+            infer: infer.clone(),
+            subst: subst.clone(),
+            obligations: FulfillmentBuilder::new(
+                FulfillmentKind::WithSimplification {
+                    goal: canonical_goal.clone(),
+                },
+                infer,
+                subst,
+            ),
             constraints: FxHashSet::default(),
             cannot_prove: false,
         };
@@ -394,7 +420,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             }
         };
 
-        self.obligations.push_obligation(obligation);
+        self.obligations
+            .push_obligation(obligation, &self.infer, &self.subst);
     }
 
     /// Unifies `a` and `b` in the given environment.
@@ -546,13 +573,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             solution,
         });
 
-        self.obligations.store_result(
-            idx,
-            af::ObligationResult {
-                kind: af::OblResultKind::Positive(map_into(sol.clone())),
-                trace,
-            },
-        );
+        self.obligations
+            .store_result(idx, af::ObligationResult::new(trace, positive_kind(&sol)));
 
         sol
     }
@@ -573,12 +595,10 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                 // proceeds, we may wind up with more information here.
                 self.obligations.store_result(
                     idx,
-                    af::ObligationResult {
-                        kind: af::OblResultKind::Negative(map_into(Ok(
-                            NegativeSolution::Ambiguous,
-                        ))),
-                        trace: ProofTree::unknown(),
-                    },
+                    af::ObligationResult::new(
+                        ProofTree::unknown(),
+                        negative_kind(&Ok(NegativeSolution::Ambiguous)),
+                    ),
                 );
                 return Ok(NegativeSolution::Ambiguous);
             }
@@ -602,13 +622,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             Ok(NegativeSolution::Refuted)
         };
 
-        self.obligations.store_result(
-            idx,
-            af::ObligationResult {
-                kind: af::OblResultKind::Negative(map_into(sol.clone())),
-                trace,
-            },
-        );
+        self.obligations
+            .store_result(idx, af::ObligationResult::new(trace, negative_kind(&sol)));
 
         sol
     }

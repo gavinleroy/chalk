@@ -15,7 +15,7 @@ use self::var::*;
 
 #[derive(Clone)]
 pub struct InferenceTable<I: Interner> {
-    unify: ena::unify::InPlaceUnificationTable<EnaVariable<I>>,
+    pub unify: ena::unify::InPlaceUnificationTable<EnaVariable<I>>,
     vars: Vec<EnaVariable<I>>,
     max_universe: UniverseIndex,
 }
