@@ -50,11 +50,9 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> + IsTracing<I> {
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
         if !should_continue() {
-            return todo!();
-            // return TracedFallible {
-            //     solution: Ok(Solution::Ambig(Guidance::Unknown)),
-            //     trace: ProofTree::halted(),
-            // };
+            return self
+                .get_inspector()
+                .traced_from_leaf(Ok(Solution::Ambig(Guidance::Unknown)));
         }
 
         let UCanonical {
@@ -128,13 +126,7 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<
         let (infer, subst, goal) = self.new_inference_table(canonical_goal);
         match Fulfill::new_with_simplification(self, infer, subst, goal) {
             Ok(fulfill) => fulfill.solve(minimums, should_continue),
-            Err(trace) => {
-                todo!()
-                //     TracedFallible {
-                //     solution: Err(NoSolution),
-                //     trace,
-                // }
-            }
+            Err(trace) => TracedFallible::from_built(Err(NoSolution), trace),
         }
     }
 
