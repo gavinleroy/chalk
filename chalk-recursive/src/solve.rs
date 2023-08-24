@@ -15,7 +15,7 @@ use chalk_solve::infer::InferenceTable;
 use chalk_solve::{Guidance, RustIrDatabase, Solution};
 use tracing::{debug, instrument};
 
-use argus::{maybe::Either, proof_tree::*};
+use argus::proof_tree::{flat::ProofTreeBuilder, *};
 
 pub(super) trait SolveDatabase<I: Interner>: Sized {
     fn solve_goal(
@@ -32,9 +32,13 @@ pub(super) trait SolveDatabase<I: Interner>: Sized {
     fn db(&self) -> &dyn RustIrDatabase<I>;
 }
 
+pub(super) trait IsTracing<I: Interner>: Sized {
+    fn get_inspector(&mut self) -> &mut ProofTreeBuilder<I>;
+}
+
 /// The `solve_iteration` method -- implemented for any type that implements
 /// `SolveDb`.
-pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
+pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> + IsTracing<I> {
     /// Executes one iteration of the recursive solver, computing the current
     /// solution to the given canonical goal. This is used as part of a loop in
     /// the case of cyclic goals.
@@ -46,10 +50,11 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
         if !should_continue() {
-            return TracedFallible {
-                solution: Ok(Solution::Ambig(Guidance::Unknown)),
-                trace: ProofTree::halted(),
-            };
+            return todo!();
+            // return TracedFallible {
+            //     solution: Ok(Solution::Ambig(Guidance::Unknown)),
+            //     trace: ProofTree::halted(),
+            // };
         }
 
         let UCanonical {
@@ -85,7 +90,6 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
 
                     self.solve_from_clauses(&canonical_domain_goal, minimums, should_continue)
                 };
-                debug!(?prog_solution);
 
                 prog_solution
             }
@@ -107,13 +111,13 @@ pub(super) trait SolveIteration<I: Interner>: SolveDatabase<I> {
 
 impl<S, I> SolveIteration<I> for S
 where
-    S: SolveDatabase<I>,
+    S: SolveDatabase<I> + IsTracing<I>,
     I: Interner,
 {
 }
 
 /// Helper methods for `solve_iteration`, private to this module.
-trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
+trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<I> {
     #[instrument(level = "debug", skip(self, minimums, should_continue))]
     fn solve_via_simplification(
         &mut self,
@@ -124,10 +128,13 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
         let (infer, subst, goal) = self.new_inference_table(canonical_goal);
         match Fulfill::new_with_simplification(self, infer, subst, goal) {
             Ok(fulfill) => fulfill.solve(minimums, should_continue),
-            Err(trace) => TracedFallible {
-                solution: Err(NoSolution),
-                trace,
-            },
+            Err(trace) => {
+                todo!()
+                //     TracedFallible {
+                //     solution: Err(NoSolution),
+                //     trace,
+                // }
+            }
         }
     }
 
@@ -177,12 +184,16 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
             }
             Err(Floundered) => {
                 let solution = Ok(Solution::Ambig(Guidance::Unknown));
+                let tree_builder = self.get_inspector();
+
                 builder.did_flounder = true;
                 builder.set_outcome(solution.clone());
-                return TracedFallible {
-                    solution,
-                    trace: ProofTree::FromClauses(builder),
-                };
+
+                let child = tree_builder.push_node(solution.clone());
+                let parent = tree_builder.push_node(builder);
+                tree_builder.relate(parent, child);
+
+                return tree_builder.traced_result(solution, parent, child);
             }
         }
 
@@ -226,15 +237,16 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
             let (res, tree) =
                 match Fulfill::new_with_clause(self, infer.clone(), subst, goal, implication) {
                     Ok(fulfill) => {
-                        let TracedFallible { solution, trace } =
-                            fulfill.solve(minimums, should_continue.clone());
+                        let TracedFallible {
+                            solution, trace, ..
+                        } = fulfill.solve(minimums, should_continue.clone());
                         ((solution, implication.skip_binders().priority), trace)
                     }
                     Err(trace) => ((Err(NoSolution), ClausePriority::High), trace),
                 };
 
             // Store the subtree for the specific clause.
-            builder.subnodes.insert(clause_idx, Either::yes(tree));
+            builder.subnodes.insert(clause_idx, tree);
 
             if let (Ok(solution), priority) = res {
                 debug!(?solution, ?priority, "Ok");
@@ -275,11 +287,36 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
             Err(NoSolution)
         };
 
+        /*
+         * TODO(gavinleroy), here I'm pushing the result of the tree as a new leaf.
+         * THIS IS NOT ACCURATRE. Clauses have various priorities and the results
+         * of each clause can factor in to the final result. This is messy
+         * because that means that the "result" isn't actually a leaf in the
+         * tree, but rather a combination of all of them. Hmph...
+         *
+         * What we really want is to point to an already present node in the tree
+         * and say "HAHA! that's where the result came from." But alas, this
+         * isn't the case :(
+         */
+
+        let inspector = self.get_inspector();
+
         builder.set_outcome(solution.clone());
-        TracedFallible {
-            solution,
-            trace: ProofTree::FromClauses(builder),
+
+        let mut children = builder
+            .subnodes
+            .iter()
+            .map(|(_, desc)| desc.root)
+            .collect::<Vec<_>>();
+        let sol = inspector.push_node(solution.clone());
+        children.push(sol);
+        let root = inspector.push_node(builder);
+
+        for child in children {
+            inspector.relate(root, child);
         }
+
+        inspector.traced_result(solution, root, sol)
     }
 
     fn new_inference_table<T: TypeFoldable<I> + HasInterner<Interner = I> + Clone + TSerialize>(
@@ -297,7 +334,7 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> {
 
 impl<'a, S, I> SolveIterationHelpers<'a, I> for S
 where
-    S: SolveDatabase<I>,
+    S: SolveDatabase<I> + IsTracing<I>,
     I: Interner + 'a,
 {
 }

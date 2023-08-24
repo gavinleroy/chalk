@@ -1,7 +1,6 @@
 use crate::fixed_point::Minimums;
-use crate::solve::SolveDatabase;
+use crate::solve::{IsTracing, SolveDatabase};
 
-use argus::proof_tree::{fulfill as af, *};
 use chalk_ir::cast::Cast;
 use chalk_ir::fold::TypeFoldable;
 use chalk_ir::interner::{HasInterner, Interner};
@@ -21,6 +20,11 @@ use fluid_let::{fluid_let, fluid_set};
 use rustc_hash::FxHashSet;
 use std::fmt::Debug;
 use tracing::{debug, instrument};
+
+use argus::proof_tree::{
+    flat::{ProofNodeIdx, ProofTreeBuilder},
+    fulfill as af, *,
+};
 
 fluid_let!(static CURRENT_ITEM: af::IdxKind);
 
@@ -61,22 +65,29 @@ impl<I: Interner> FulfillmentBuilder<I> {
         })
     }
 
+    /// Push a new `Obligation` onto the stack, but save this information in the
+    /// `ProofTreeBuilder`, and `FulfillmentBuilder`.
     fn push_obligation(
         &mut self,
+        builder: &mut ProofTreeBuilder<I>,
         obligation: Obligation<I>,
         infer: &InferenceTable<I>,
         subst: &Substitution<I>,
     ) -> af::IdxKind {
+        // Convert to an argus::Obligation
         let (kind, goal) = match &obligation {
             Obligation::Prove(env_goal) => (af::ObligationKind::Prove, env_goal),
             Obligation::Refute(env_goal) => (af::ObligationKind::Refute, env_goal),
         };
 
-        let obl = af::Obligation::new(goal, infer, subst, kind);
+        // Push the argus obligation into the global node buffer, obtaining its index.
+        let obl = builder.push_node(af::Obligation::new(goal, infer, subst, kind));
 
         CURRENT_ITEM.get(|idx_opt| {
             let from = idx_opt.copied().unwrap_or(af::IdxKind::CurrentRoot);
+            // Get the obligation index within the Obligation Buffer
             let idx = self.builder.add_obligation(from, obl);
+            // push the local Obligation with its corresponding ObligationIdx.
             self.obligations.push((idx, obligation));
             af::IdxKind::Obligation(idx)
         })
@@ -90,22 +101,86 @@ impl<I: Interner> FulfillmentBuilder<I> {
         })
     }
 
-    fn store_result(&mut self, from: af::ObligationIdx, result: af::ObligationResult<I>) {
-        self.builder.add_result(from, result);
+    fn store_result(
+        &mut self,
+        builder: &mut ProofTreeBuilder<I>,
+        from: af::ObligationIdx,
+        result: af::ObligationResult<I>,
+    ) {
+        let node_idx = self.builder.obligations[from];
+        let node = &mut builder.nodes[node_idx];
+        let ProofNode::Obligation(obligation) = node else {
+            unreachable!("ObligationIdx points to non-Obligation ProofNode {:?}", node);
+        };
+        let child = result.trace.root;
+        obligation.result.push(result);
+        builder.relate(node_idx, child);
     }
 
-    fn into_proof(self) -> ProofTree<I> {
-        if self.builder.has_obligations() && !self.builder.has_obligation_results() {
-            // IFF there are no obligation results, but there does exist obligations.
-            // THEN: there must exist a failure reason, e.g., it can't be Unknown.
-            assert!(
-                !matches!(self.builder.did_fail, af::FulfillFailKind::Unknown),
-                "Fulfillment Builders must have a failure reason {:#?}",
-                self.builder
-            );
+    /// Get the bottom-most leaf of the proof tree. In this method we treat the tree as a DAG.
+    fn get_current_sink(&self, builder: &ProofTreeBuilder<I>) -> Option<ProofNodeIdx> {
+        // FIXME(gavinleroy): this is definitely wrong ...
+
+        // The last result of the last obligation (not how it works...)
+        self.builder.obligations.iter().rev().find_map(|&o| {
+            let node = &builder.nodes[o];
+            let ProofNode::Obligation(obligation) = node else {
+                return None;
+            };
+            let last_res = obligation.result.last()?;
+            Some(last_res.trace.leaf)
+        })
+    }
+
+    /// Take the current state of the `FulfillmentBuilder` and maintain invariants
+    /// in the overall tree builder. This method needs to make sure that the Fulfillment
+    /// node is finalized and inserted into the tree, subgoals need to be added as
+    /// children to the tree, and the final tree description needs to be built.
+    fn mint_proof(
+        self,
+        builder: &mut ProofTreeBuilder<I>,
+        outcome: Option<&Fallible<Solution<I>>>,
+    ) -> TreeDescription {
+        let sol_is_unique = outcome
+            .map(|fallible| matches!(fallible, Ok(Solution::Unique(..))))
+            .unwrap_or(false);
+        let fail_is_unknown = matches!(self.builder.did_fail, af::FulfillFailKind::Unknown);
+        let exists_obligations = self.builder.has_obligations();
+        let exists_results = self.builder.has_obligation_results(&builder.nodes);
+
+        assert!(
+            // There exists a solution.
+            sol_is_unique ||
+                // There are obligations and results.
+                (exists_obligations && exists_results) ||
+                // There is a reason for failure.
+                !fail_is_unknown,
+            "Fulfillment Builders must have a failure reason {:#?}",
+            self.builder
+        );
+
+        let mut children = self.builder.obligations.iter().copied().collect::<Vec<_>>();
+
+        let leaf = if exists_results {
+            self.get_current_sink(builder).unwrap()
+        } else if exists_obligations || !fail_is_unknown {
+            let l = builder.push_node(NoSolution);
+            children.push(l);
+            l
+        } else {
+            assert!(outcome.is_some());
+            let l = builder.push_node(outcome.unwrap().clone());
+            children.push(l);
+            l
+        };
+
+        let root = builder.push_node(self.builder);
+
+        for child in children {
+            builder.relate(root, child);
         }
 
-        self.builder.to_proof()
+        builder.describe_tree(root, leaf)
     }
 }
 
@@ -129,6 +204,7 @@ impl<I: Interner> std::ops::DerefMut for FulfillmentBuilder<I> {
     }
 }
 
+#[derive(Debug)]
 enum Outcome {
     Complete,
     Incomplete,
@@ -266,7 +342,7 @@ where
 /// of type inference in general. But when solving trait constraints, *fresh*
 /// `Fulfill` instances will be created to solve canonicalized, free-standing
 /// goals, and transport what was learned back to the outer context.
-pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
+pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> {
     solver: &'s mut Solver,
     subst: Substitution<I>,
     infer: InferenceTable<I>,
@@ -287,9 +363,9 @@ pub(super) struct Fulfill<'s, I: Interner, Solver: SolveDatabase<I>> {
 // FIXME: Previously we returned a `Fallible` type which simply uses the NoSolution
 //        variant as the error, here we just return the attempted proof tree, and
 //        later can use NoSolution as the Fallible<Solution<I>> type.
-type TracedCreate<T, I> = Result<T, ProofTree<I>>;
+type TracedCreate<T> = Result<T, TreeDescription>;
 
-impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
+impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, Solver> {
     #[instrument(level = "debug", skip(solver, infer))]
     pub(super) fn new_with_clause(
         solver: &'s mut Solver,
@@ -297,7 +373,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         subst: Substitution<I>,
         canonical_goal: InEnvironment<DomainGoal<I>>,
         clause: &Binders<ProgramClauseImplication<I>>,
-    ) -> TracedCreate<Self, I> {
+    ) -> TracedCreate<Self> {
         let mut fulfill = Fulfill {
             solver,
             infer: infer.clone(),
@@ -316,6 +392,15 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         // Forget the goal of the outer context.
         provenance_barrier! {};
+
+        debug!(?clause, "Using program clause");
+
+        // HACK debugging.
+        let reverse_subst = fulfill
+            .infer
+            .clone()
+            .reverse_existential_instantiation(fulfill.solver.interner(), clause.clone());
+        debug!(?reverse_subst, "Reversing existential subst");
 
         let ProgramClauseImplication {
             consequence,
@@ -342,13 +427,17 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             fulfill
                 .obligations
                 .inform_of_failure(af::FulfillFailKind::Unification);
-            return Err(fulfill.obligations.into_proof());
+            return Err(fulfill
+                .obligations
+                .mint_proof(fulfill.solver.get_inspector(), None));
         }
 
         // if so, toss in all of its premises
         for condition in conditions.as_slice(fulfill.solver.interner()) {
             if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
-                return Err(fulfill.obligations.into_proof());
+                return Err(fulfill
+                    .obligations
+                    .mint_proof(fulfill.solver.get_inspector(), None));
             }
         }
 
@@ -360,7 +449,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         infer: InferenceTable<I>,
         subst: Substitution<I>,
         canonical_goal: InEnvironment<Goal<I>>,
-    ) -> TracedCreate<Self, I> {
+    ) -> TracedCreate<Self> {
         let mut fulfill = Fulfill {
             solver,
             infer: infer.clone(),
@@ -381,7 +470,9 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
         {
-            return Err(fulfill.obligations.into_proof());
+            return Err(fulfill
+                .obligations
+                .mint_proof(fulfill.solver.get_inspector(), None));
         }
 
         Ok(fulfill)
@@ -420,8 +511,12 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             }
         };
 
-        self.obligations
-            .push_obligation(obligation, &self.infer, &self.subst);
+        self.obligations.push_obligation(
+            self.solver.get_inspector(),
+            obligation,
+            &self.infer,
+            &self.subst,
+        );
     }
 
     /// Unifies `a` and `b` in the given environment.
@@ -490,9 +585,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let interner = self.solver.interner();
         match goal.data(interner) {
             GoalData::Quantified(QuantifierKind::ForAll, subgoal) => {
+                eprintln!("BEFORE! {subgoal:#?}");
                 let subgoal = self
                     .infer
                     .instantiate_binders_universally(self.solver.interner(), subgoal.clone());
+                eprintln!("AFTER! {subgoal:#?}");
                 self.push_goal(environment, subgoal)?;
             }
             GoalData::Quantified(QuantifierKind::Exists, subgoal) => {
@@ -563,9 +660,14 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let interner = self.solver.interner();
         let (quantified, free_vars) = canonicalize(&mut self.infer, interner, wc);
         let (quantified, universes) = u_canonicalize(&mut self.infer, interner, &quantified);
-        let TracedFallible { solution, trace } =
-            self.solver
-                .solve_goal(quantified, minimums, should_continue);
+
+        debug!(?quantified, "After UCanonical");
+
+        let TracedFallible {
+            solution, trace, ..
+        } = self
+            .solver
+            .solve_goal(quantified, minimums, should_continue);
 
         let sol = solution.map(|solution| PositiveSolution {
             free_vars,
@@ -573,8 +675,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             solution,
         });
 
-        self.obligations
-            .store_result(idx, af::ObligationResult::new(trace, positive_kind(&sol)));
+        self.obligations.store_result(
+            self.solver.get_inspector(),
+            idx,
+            af::ObligationResult::new(trace, positive_kind(&sol)),
+        );
 
         sol
     }
@@ -593,10 +698,12 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             None => {
                 // Treat non-ground negatives as ambiguous. Note that, as inference
                 // proceeds, we may wind up with more information here.
+                let unknown = self.solver.get_inspector().push_node(ProofTree::unknown());
                 self.obligations.store_result(
+                    self.solver.get_inspector(),
                     idx,
                     af::ObligationResult::new(
-                        ProofTree::unknown(),
+                        TreeDescription::single(unknown),
                         negative_kind(&Ok(NegativeSolution::Ambiguous)),
                     ),
                 );
@@ -608,9 +715,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
         let (quantified, _) =
             u_canonicalize(&mut self.infer, self.solver.interner(), &canonicalized);
         let mut minimums = Minimums::new(); // FIXME -- minimums here seems wrong
-        let TracedFallible { solution, trace } =
-            self.solver
-                .solve_goal(quantified, &mut minimums, should_continue);
+        let TracedFallible {
+            solution, trace, ..
+        } = self
+            .solver
+            .solve_goal(quantified, &mut minimums, should_continue);
 
         let sol = if let Ok(solution) = solution {
             if solution.is_unique() {
@@ -622,8 +731,11 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             Ok(NegativeSolution::Refuted)
         };
 
-        self.obligations
-            .store_result(idx, af::ObligationResult::new(trace, negative_kind(&sol)));
+        self.obligations.store_result(
+            self.solver.get_inspector(),
+            idx,
+            af::ObligationResult::new(trace, negative_kind(&sol)),
+        );
 
         sol
     }
@@ -636,6 +748,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     /// `universes` stores the mapping back into our
     /// universes. Second, the free variables that appear within can
     /// be mapped into our variables with `free_vars`.
+    #[instrument(level = "debug", skip(self, universes))]
     fn apply_solution(
         &mut self,
         free_vars: Vec<GenericArg<I>>,
@@ -761,40 +874,40 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
     /// Try to fulfill all pending obligations and build the resulting
     /// solution. The returned solution will transform `subst` substitution with
     /// the outcome of type inference by updating the replacements it provides.
+    // TODO(gavinleroy), the tracing changes are quite intrusive here, can we tone it down a bit?
     pub(super) fn solve(
         mut self,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
-        macro_rules! consume_trace {
-            ($val1:expr) => {{
-                let value = $val1;
+        // FIXME(gavinleroy): this seems wrong.
+        macro_rules! return_traced {
+            (UseCurrentSink, $solution:expr) => {{
+                let leaf = self
+                    .obligations
+                    .get_current_sink(self.solver.get_inspector());
+                return_traced!($solution, leaf)
+            }};
+            (CreateLeaf, $solution:expr) => {{
+                let value = $solution;
+                let leaf = self.solver.get_inspector().push_node(value.clone());
+                return_traced!(value, leaf)
+            }};
+            ($solution:expr, $sink:expr) => {{
+                let value = $solution;
                 self.obligations.builder.set_result(value.clone());
-                TracedFallible {
-                    solution: value,
-                    trace: self.obligations.into_proof(),
-                }
-            }};
-            (Unique => $sol:expr) => {{
-                consume_trace!(Ok(Solution::Unique($sol)))
-            }};
-            (Suggested => $sol:expr) => {{
-                consume_trace!(Ok(Solution::Ambig(Guidance::Suggested($sol))))
-            }};
-            (Definite => $sol:expr) => {{
-                consume_trace!(Ok(Solution::Ambig(Guidance::Definite($sol))))
-            }};
-            (Unknown =>) => {{
-                consume_trace!(Ok(Solution::Ambig(Guidance::Unknown)))
-            }};
-            (Error => $err:expr) => {{
-                consume_trace!(Err($err))
+                let inspector = self.solver.get_inspector();
+                let descr = self.obligations.mint_proof(inspector, Some(&value));
+                debug!(?value, "Final answer from solving");
+                return TracedFallible::from_built(value, descr);
             }};
         }
 
-        let outcome = match self.fulfill(minimums, should_continue.clone()) {
+        let outcome = self.fulfill(minimums, should_continue.clone());
+        debug!(?outcome, "Fulfillment outcome");
+        let outcome = match outcome {
             Ok(o) => o,
-            Err(e) => return consume_trace!(Error => e),
+            Err(e) => return_traced!(CreateLeaf, Err(e)),
         };
 
         if self.cannot_prove {
@@ -806,7 +919,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                 af::FulfillFailKind::Unknown
             ));
 
-            return consume_trace!(Unknown =>);
+            return_traced!(CreateLeaf, Ok(Solution::Ambig(Guidance::Unknown)));
         }
 
         if outcome.is_complete() {
@@ -822,7 +935,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                     constraints,
                 },
             );
-            return consume_trace!(Unique => constrained.0);
+
+            return_traced!(UseCurrentSink, Ok(Solution::Unique(constrained.0)));
         }
 
         // Otherwise, we have (positive or negative) obligations remaining, but
@@ -832,6 +946,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
 
         let canonical_subst =
             canonicalize(&mut self.infer, self.solver.interner(), self.subst.clone());
+
+        debug!(?canonical_subst, "Packaging solve info");
 
         if canonical_subst
             .0
@@ -858,14 +974,15 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
                         solution.constrained_subst(self.solver.interner())
                     {
                         self.apply_solution(free_vars, universes, constrained_subst);
-                        return consume_trace!(
-                            Suggested => canonical_subst.0
+                        return_traced!(
+                            UseCurrentSink,
+                            Ok(Solution::Ambig(Guidance::Suggested(canonical_subst.0)))
                         );
                     }
                 }
             }
 
-            consume_trace!(Unknown =>)
+            return_traced!(UseCurrentSink, Ok(Solution::Ambig(Guidance::Unknown)));
         } else {
             // While we failed to prove the goal, we still learned that
             // something had to hold. Here's an example where this happens:
@@ -887,8 +1004,9 @@ impl<'s, I: Interner, Solver: SolveDatabase<I>> Fulfill<'s, I, Solver> {
             // for sure what `T` must be (it could be either `Foo<Bar>` or
             // `Foo<Baz>`, but we *can* say for sure that it must be of the
             // form `Foo<?0>`.
-            consume_trace!(
-                Definite => canonical_subst.0
+            return_traced!(
+                UseCurrentSink,
+                Ok(Solution::Ambig(Guidance::Definite(canonical_subst.0)))
             )
         }
     }

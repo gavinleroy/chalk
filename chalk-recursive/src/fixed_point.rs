@@ -7,17 +7,23 @@ mod cache;
 pub mod search_graph;
 pub mod stack;
 
+use argus::proof_tree::flat::ProofTreeBuilder;
+use chalk_ir::interner::Interner;
 use chalk_solve::FromCache;
 
 pub use cache::Cache;
 use search_graph::{DepthFirstNumber, SearchGraph};
 use stack::{Stack, StackDepth};
 
-pub(super) struct RecursiveContext<K, V>
+pub(super) struct RecursiveContext<K, V, I>
 where
     K: Hash + Eq + Debug + Clone,
     V: Debug + Clone,
+    I: Interner,
 {
+    /// The tracing mechanism used to store proof tree nodes.
+    pub(crate) inspect: ProofTreeBuilder<I>,
+
     stack: Stack,
 
     /// The "search graph" stores "in-progress results" that are still being
@@ -33,7 +39,7 @@ where
     max_size: usize,
 }
 
-pub(super) trait SolverStuff<K, V>: Copy
+pub(super) trait SolverStuff<K, V, I: Interner>: Copy
 where
     K: Hash + Eq + Debug + Clone,
     V: Debug + Clone,
@@ -42,7 +48,7 @@ where
     fn initial_value(self, goal: &K, coinductive_goal: bool) -> V;
     fn solve_iteration(
         self,
-        context: &mut RecursiveContext<K, V>,
+        context: &mut RecursiveContext<K, V, I>,
         goal: &K,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
@@ -71,13 +77,14 @@ impl Minimums {
     }
 }
 
-impl<K, V> RecursiveContext<K, V>
+impl<K, V, I: Interner> RecursiveContext<K, V, I>
 where
     K: Hash + Eq + Debug + Clone,
     V: Debug + Clone + FromCache<K>,
 {
     pub fn new(overflow_depth: usize, max_size: usize, cache: Option<Cache<K, V>>) -> Self {
         RecursiveContext {
+            inspect: ProofTreeBuilder::new(),
             stack: Stack::new(overflow_depth),
             search_graph: SearchGraph::new(),
             cache,
@@ -107,7 +114,7 @@ where
     pub fn solve_root_goal(
         &mut self,
         canonical_goal: &K,
-        solver_stuff: impl SolverStuff<K, V>,
+        solver_stuff: impl SolverStuff<K, V, I>,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> V {
         debug!("solve_root_goal(canonical_goal={:?})", canonical_goal);
@@ -125,7 +132,7 @@ where
         &mut self,
         goal: &K,
         minimums: &mut Minimums,
-        solver_stuff: impl SolverStuff<K, V>,
+        solver_stuff: impl SolverStuff<K, V, I>,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> V {
         // First check the cache.
@@ -200,13 +207,13 @@ where
         }
     }
 
-    #[instrument(level = "debug", skip(self, solver_stuff, should_continue))]
+    // #[instrument(level = "debug", skip(self, solver_stuff, should_continue))]
     fn solve_new_subgoal(
         &mut self,
         canonical_goal: &K,
         depth: StackDepth,
         dfn: DepthFirstNumber,
-        solver_stuff: impl SolverStuff<K, V>,
+        solver_stuff: impl SolverStuff<K, V, I>,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> Minimums {
         // We start with `answer = None` and try to solve the goal. At the end of the iteration,

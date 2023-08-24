@@ -1,27 +1,27 @@
 use crate::fixed_point::{Cache, Minimums, RecursiveContext, SolverStuff};
-use crate::solve::{SolveDatabase, SolveIteration};
+use crate::solve::{IsTracing, SolveDatabase, SolveIteration};
 use crate::UCanonicalGoal;
 
 use chalk_ir::Constraints;
-use chalk_ir::{interner::Interner, NoSolution};
+use chalk_ir::{interner::Interner, Fallible, NoSolution};
 use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
 use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase, Solution};
 use std::fmt;
 
-use argus::proof_tree::TracedFallible;
+use argus::proof_tree::{flat::ProofNodeIdx, ProofNode, TracedFallible, TreeDescription};
 
 /// A Solver is the basic context in which you can propose goals for a given
 /// program. **All questions posed to the solver are in canonical, closed form,
 /// so that each question is answered with effectively a "clean slate"**. This
 /// allows for better caching, and simplifies management of the inference
 /// context.
-struct Solver<'me, I: Interner> {
+pub(crate) struct Solver<'me, I: Interner> {
     program: &'me dyn RustIrDatabase<I>,
-    context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
+    context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>, I>,
 }
 
 pub struct RecursiveSolver<I: Interner> {
-    ctx: Box<RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>>,
+    ctx: Box<RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>, I>>,
 }
 
 impl<I: Interner> RecursiveSolver<I> {
@@ -34,6 +34,12 @@ impl<I: Interner> RecursiveSolver<I> {
             ctx: Box::new(RecursiveContext::new(overflow_depth, max_size, cache)),
         }
     }
+
+    pub fn consume_tree(self, desc: TreeDescription) -> argus::proof_tree::flat::ProofTreeNav<I> {
+        let ctx = *self.ctx;
+        let builder = ctx.inspect;
+        builder.root_at(desc)
+    }
 }
 
 impl<I: Interner> fmt::Debug for RecursiveSolver<I> {
@@ -44,14 +50,14 @@ impl<I: Interner> fmt::Debug for RecursiveSolver<I> {
 
 impl<'me, I: Interner> Solver<'me, I> {
     pub(crate) fn new(
-        context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
+        context: &'me mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>, I>,
         program: &'me dyn RustIrDatabase<I>,
     ) -> Self {
         Self { program, context }
     }
 }
 
-impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn RustIrDatabase<I> {
+impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>, I> for &dyn RustIrDatabase<I> {
     fn is_coinductive_goal(self, goal: &UCanonicalGoal<I>) -> bool {
         goal.is_coinductive(self)
     }
@@ -65,21 +71,15 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
                 },
                 binders: goal.canonical.binders.clone(),
             });
-            TracedFallible {
-                solution: Ok(solution.clone()),
-                trace: solution.into(),
-            }
+            TracedFallible::from_built(Ok(solution.clone()), TreeDescription::auto_true())
         } else {
-            TracedFallible {
-                solution: Err(NoSolution),
-                trace: NoSolution.into(),
-            }
+            TracedFallible::from_built(Err(NoSolution), TreeDescription::auto_false())
         }
     }
 
     fn solve_iteration(
         self,
-        context: &mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>>,
+        context: &mut RecursiveContext<UCanonicalGoal<I>, TracedFallible<I>, I>,
         goal: &UCanonicalGoal<I>,
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
@@ -110,10 +110,7 @@ impl<I: Interner> SolverStuff<UCanonicalGoal<I>, TracedFallible<I>> for &dyn Rus
     }
 
     fn error_value(self) -> TracedFallible<I> {
-        TracedFallible {
-            solution: Err(NoSolution),
-            trace: NoSolution.into(),
-        }
+        TracedFallible::from_built(Err(NoSolution), TreeDescription::auto_false())
     }
 }
 
@@ -138,6 +135,12 @@ impl<'me, I: Interner> SolveDatabase<I> for Solver<'me, I> {
 
     fn max_size(&self) -> usize {
         self.context.max_size()
+    }
+}
+
+impl<I: Interner> IsTracing<I> for Solver<'_, I> {
+    fn get_inspector(&mut self) -> &mut argus::proof_tree::flat::ProofTreeBuilder<I> {
+        &mut self.context.inspect
     }
 }
 
