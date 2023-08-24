@@ -395,13 +395,6 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
 
         debug!(?clause, "Using program clause");
 
-        // HACK debugging.
-        let reverse_subst = fulfill
-            .infer
-            .clone()
-            .reverse_existential_instantiation(fulfill.solver.interner(), clause.clone());
-        debug!(?reverse_subst, "Reversing existential subst");
-
         let ProgramClauseImplication {
             consequence,
             conditions,

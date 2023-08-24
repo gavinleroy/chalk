@@ -1,7 +1,7 @@
 use crate::RustIrDatabase;
 use chalk_derive::HasInterner;
-use chalk_ir::interner::{Interner, TSerialize};
 use chalk_ir::*;
+use chalk_ir::{interner::Interner, TSerialize};
 use std::fmt;
 use tracing::debug;
 

@@ -4,7 +4,10 @@ use crate::fixed_point::Minimums;
 use crate::UCanonicalGoal;
 use chalk_ir::could_match::CouldMatch;
 use chalk_ir::fold::TypeFoldable;
-use chalk_ir::interner::{HasInterner, Interner, TSerialize};
+use chalk_ir::{
+    interner::{HasInterner, Interner},
+    TSerialize,
+};
 use chalk_ir::{
     Canonical, ClausePriority, DomainGoal, Floundered, Goal, GoalData, InEnvironment, NoSolution,
     ProgramClause, ProgramClauseData, Substitution, UCanonical,

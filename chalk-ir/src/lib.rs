@@ -16,25 +16,33 @@ use chalk_derive::{
 use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
-#[cfg(feature = "tserialize")]
-use serde::Serialize;
-
-#[cfg(feature = "tserialize")]
-use ts_rs::TS;
-
 pub use crate::debug::SeparatorTraitRef;
 #[macro_use(bitflags)]
 extern crate bitflags;
 
 // ----
 
-// #[allow(dead_code)]
-// const fn static_panic() {
-//     assert!(false);
-// }
+#[cfg(feature = "tserialize")]
+use serde::Serialize;
 
-// #[cfg(not(feature = "tserialize"))]
-// const _: () = static_panic();
+#[cfg(feature = "tserialize")]
+use ts_rs::TS;
+
+#[cfg(feature = "tserialize")]
+/// Trait requiring TS and Serialize.
+pub trait TSerialize: TS + Serialize {}
+
+#[cfg(feature = "tserialize")]
+impl<T: TS + Serialize> TSerialize for T {}
+
+/// Dummy Trait
+#[cfg(not(feature = "tserialize"))]
+pub trait TSerialize {}
+
+#[cfg(not(feature = "tserialize"))]
+impl<T> TSerialize for T {}
+
+// ---
 
 /// Uninhabited (empty) type, used in combination with `PhantomData`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,7 +97,7 @@ pub mod visit;
 pub mod cast;
 
 pub mod interner;
-use interner::{HasInterner, Interner, TSerialize};
+use interner::{HasInterner, Interner};
 
 pub mod could_match;
 pub mod debug;

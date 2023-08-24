@@ -28,6 +28,7 @@ use crate::QuantifiedWhereClause;
 use crate::QuantifiedWhereClauses;
 use crate::SeparatorTraitRef;
 use crate::Substitution;
+use crate::TSerialize;
 use crate::TraitId;
 use crate::Ty;
 use crate::TyData;
@@ -41,30 +42,6 @@ use std::fmt::{self, Debug};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
-
-#[cfg(feature = "tserialize")]
-use serde::Serialize;
-
-#[cfg(feature = "tserialize")]
-use ts_rs::TS;
-
-// HACK: to avoid changing all the testing infrastructure.
-
-#[cfg(feature = "tserialize")]
-/// Trait requiring TS and Serialize.
-pub trait TSerialize: TS + Serialize {}
-
-#[cfg(feature = "tserialize")]
-impl<T: TS + Serialize> TSerialize for T {}
-
-/// Dummy Trait
-#[cfg(not(feature = "tserialize"))]
-pub trait TSerialize {}
-
-#[cfg(not(feature = "tserialize"))]
-impl<T> TSerialize for T {}
-
-// ---
 
 /// A "interner" encapsulates the concrete representation of
 /// certain "core types" from chalk-ir. All the types in chalk-ir are
