@@ -1,7 +1,7 @@
 [package]
 name = "chalk-recursive"
-version = "0.92.0-dev.0"
-description = "Tracing Recursive solver for the Chalk project"
+version = "0.92.0"
+description = "Recursive solver for the Chalk project"
 license = "MIT OR Apache-2.0"
 authors = ["Rust Compiler Team", "Chalk developers"]
 repository = "https://github.com/rust-lang/chalk"
@@ -18,9 +18,9 @@ serde = "=1.0.156"
 itertools = "0.11"
 ts-rs = { version = "6.2.0" }
 
-chalk-derive = { version = "0.92.0-dev.0", path = "../chalk-derive" }
-chalk-ir = { version = "0.92.0-dev.0", path = "../chalk-ir" }
-chalk-solve = { version = "0.92.0-dev.0", path = "../chalk-solve", default-features = false }
+chalk-derive = { version = "=0.92.0", path = "../chalk-derive" }
+chalk-ir = { version = "=0.92.0", path = "../chalk-ir" }
+chalk-solve = { version = "=0.92.0", path = "../chalk-solve", default-features = false }
 
 # TODO put this behind a feature
 argus = { version = "0.0.0", path = "../../crates/argus" }

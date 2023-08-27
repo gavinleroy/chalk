@@ -1158,3 +1158,118 @@ fn projection_to_opaque() {
         }
     }
 }
+
+#[test]
+fn projection_from_super_trait_bounds() {
+    test! {
+        program {
+            trait Foo {
+                type A;
+            }
+            trait Bar where Self: Foo<A = ()> {}
+            impl Foo for i32 {
+                type A = ();
+            }
+            impl Bar for i32 {}
+            opaque type Opaque: Bar = i32;
+        }
+
+        goal {
+            forall<'a> {
+                <dyn Bar + 'a as Foo>::A = ()
+            }
+        } yields {
+            expect![[r#"Unique"#]]
+        }
+
+        goal {
+            <Opaque as Foo>::A = ()
+        } yields {
+            expect![[r#"Unique"#]]
+        }
+    }
+}
+
+#[test]
+fn nested_proj_eq_nested_proj_should_flounder() {
+    test! {
+        program {
+            #[non_enumerable]
+            trait Trait1 {
+                type Assoc: Trait2;
+            }
+            #[non_enumerable]
+            trait Trait2 {
+                type Assoc;
+            }
+
+            impl Trait1 for () {
+                type Assoc = ();
+            }
+            impl Trait1 for i32 {
+                type Assoc = ();
+            }
+            impl Trait2 for () {
+                type Assoc = ();
+            }
+        }
+
+        goal {
+            exists<T, U> {
+                <<T as Trait1>::Assoc as Trait2>::Assoc = <<U as Trait1>::Assoc as Trait2>::Assoc
+            }
+        } yields[SolverChoice::slg_default()] {
+            // FIXME
+            expect![[r#"Ambiguous; definite substitution for<?U0> { [?0 := ^0.0, ?1 := ^0.0] }"#]]
+        } yields[SolverChoice::recursive_default()] {
+            expect![[r#"Ambiguous; no inference guidance"#]]
+        }
+    }
+}
+
+#[test]
+fn clauses_for_placeholder_projection_types() {
+    test! {
+        program {
+            trait Iterator { type Item; }
+            trait IntoIterator {
+                type Item;
+                type IntoIter: Iterator<Item = <Self as IntoIterator>::Item>;
+            }
+
+            struct Vec<T> { }
+            impl<T> IntoIterator for Vec<T> {
+                type Item = T;
+                type IntoIter = Iter<T>;
+            }
+
+            struct Iter<T> { }
+            impl<T> Iterator for Iter<T> {
+                type Item = T;
+            }
+
+            opaque type Opaque<T>: IntoIterator<Item = T> = Vec<T>;
+        }
+
+        goal {
+            forall<T> {
+                <Opaque<T> as IntoIterator>::IntoIter: Iterator
+            }
+        } yields {
+            expect![[r#"Unique"#]]
+        }
+
+        goal {
+            forall<T> {
+                exists<U> {
+                    <<Opaque<T> as IntoIterator>::IntoIter as Iterator>::Item = U
+                }
+            }
+        } yields[SolverChoice::slg_default()] {
+            // FIXME: chalk#234?
+            expect![[r#"Ambiguous; no inference guidance"#]]
+        } yields[SolverChoice::recursive_default()] {
+            expect![[r#"Unique; substitution [?0 := !1_0]"#]]
+        }
+    }
+}

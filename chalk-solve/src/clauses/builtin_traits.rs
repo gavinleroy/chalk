@@ -2,7 +2,7 @@ use super::{builder::ClauseBuilder, generalize};
 use crate::{
     rust_ir::AdtKind, CanonicalVarKinds, Interner, RustIrDatabase, TraitRef, WellKnownTrait,
 };
-use chalk_ir::{Floundered, Substitution, Ty};
+use chalk_ir::{Floundered, Substitution, Ty, TyKind};
 
 mod clone;
 mod copy;
@@ -60,6 +60,11 @@ pub fn add_builtin_program_clauses<I: Interner>(
             WellKnownTrait::Pointee => {
                 pointee::add_pointee_program_clauses(db, builder, self_ty)?;
             }
+            WellKnownTrait::FnPtr => {
+                if let TyKind::Function(_) = self_ty.kind(db.interner()) {
+                    builder.push_fact(trait_ref);
+                }
+            }
             // There are no builtin impls provided for the following traits:
             WellKnownTrait::Unpin
             | WellKnownTrait::Drop
@@ -78,39 +83,21 @@ pub fn add_builtin_assoc_program_clauses<I: Interner>(
     well_known: WellKnownTrait,
     self_ty: Ty<I>,
 ) -> Result<(), Floundered> {
-    match well_known {
+    // If `self_ty` contains bound vars, we want to universally quantify them.
+    // `Generalize` collects them for us.
+    let generalized = generalize::Generalize::apply(db.interner(), self_ty);
+    builder.push_binders(generalized, |builder, self_ty| match well_known {
         WellKnownTrait::FnOnce => {
-            // If `self_ty` contains bound vars, we want to universally quantify them.
-            // `Generalize` collects them for us.
-            let generalized = generalize::Generalize::apply(db.interner(), self_ty);
-
-            builder.push_binders(generalized, |builder, self_ty| {
-                fn_family::add_fn_trait_program_clauses(db, builder, well_known, self_ty);
-                Ok(())
-            })
+            fn_family::add_fn_trait_program_clauses(db, builder, well_known, self_ty);
+            Ok(())
         }
-        WellKnownTrait::Pointee => {
-            // If `self_ty` contains bound vars, we want to universally quantify them.
-            // `Generalize` collects them for us.
-            let generalized = generalize::Generalize::apply(db.interner(), self_ty);
-
-            builder.push_binders(generalized, |builder, self_ty| {
-                pointee::add_pointee_program_clauses(db, builder, self_ty)?;
-                Ok(())
-            })
-        }
+        WellKnownTrait::Pointee => pointee::add_pointee_program_clauses(db, builder, self_ty),
         WellKnownTrait::DiscriminantKind => {
             discriminant_kind::add_discriminant_clauses(db, builder, self_ty)
         }
-        WellKnownTrait::Generator => {
-            let generalized = generalize::Generalize::apply(db.interner(), self_ty);
-
-            builder.push_binders(generalized, |builder, self_ty| {
-                generator::add_generator_program_clauses(db, builder, self_ty)
-            })
-        }
+        WellKnownTrait::Generator => generator::add_generator_program_clauses(db, builder, self_ty),
         _ => Ok(()),
-    }
+    })
 }
 
 /// Returns type of the last field of the input struct, which is useful for `Sized` and related
