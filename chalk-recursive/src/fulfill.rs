@@ -578,11 +578,9 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         let interner = self.solver.interner();
         match goal.data(interner) {
             GoalData::Quantified(QuantifierKind::ForAll, subgoal) => {
-                eprintln!("BEFORE! {subgoal:#?}");
                 let subgoal = self
                     .infer
                     .instantiate_binders_universally(self.solver.interner(), subgoal.clone());
-                eprintln!("AFTER! {subgoal:#?}");
                 self.push_goal(environment, subgoal)?;
             }
             GoalData::Quantified(QuantifierKind::Exists, subgoal) => {

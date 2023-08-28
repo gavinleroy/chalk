@@ -161,10 +161,7 @@ impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
         program: &dyn RustIrDatabase<I>,
         goal: &UCanonical<InEnvironment<Goal<I>>>,
     ) -> Option<chalk_solve::Solution<I>> {
-        self.ctx
-            .solve_root_goal(goal, program, || true)
-            .solution
-            .ok()
+        self.solve_traced(program, goal, &|| true).solution.ok()
     }
 
     fn solve_limited(
@@ -173,8 +170,7 @@ impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
         goal: &UCanonical<InEnvironment<Goal<I>>>,
         should_continue: &dyn std::ops::Fn() -> bool,
     ) -> Option<chalk_solve::Solution<I>> {
-        self.ctx
-            .solve_root_goal(goal, program, should_continue)
+        self.solve_traced(program, goal, should_continue)
             .solution
             .ok()
     }
