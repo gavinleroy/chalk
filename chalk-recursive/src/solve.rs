@@ -229,16 +229,16 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<
             let infer = infer.clone();
             let subst = subst.clone();
             let goal = goal.clone();
-            let (res, tree) =
-                match Fulfill::new_with_clause(self, infer.clone(), subst, goal, implication) {
-                    Ok(fulfill) => {
-                        let TracedFallible {
-                            solution, trace, ..
-                        } = fulfill.solve(minimums, should_continue.clone());
-                        ((solution, implication.skip_binders().priority), trace)
-                    }
-                    Err(trace) => ((Err(NoSolution), ClausePriority::High), trace),
-                };
+            let (res, tree) = match Fulfill::new_with_clause(self, infer, subst, goal, implication)
+            {
+                Ok(fulfill) => {
+                    let TracedFallible {
+                        solution, trace, ..
+                    } = fulfill.solve(minimums, should_continue.clone());
+                    ((solution, implication.skip_binders().priority), trace)
+                }
+                Err(trace) => ((Err(NoSolution), ClausePriority::High), trace),
+            };
 
             // Store the subtree for the specific clause.
             builder.subnodes.insert(clause_idx, tree);

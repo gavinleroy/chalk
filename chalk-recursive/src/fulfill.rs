@@ -22,8 +22,10 @@ use std::fmt::Debug;
 use tracing::{debug, instrument};
 
 use argus::proof_tree::{
-    flat::{ProofNodeIdx, ProofTreeBuilder},
-    fulfill as af, *,
+    flat::ProofTreeBuilder,
+    fulfill as af,
+    indices::{ObligationIdx, ProofNodeIdx},
+    *,
 };
 
 fluid_let!(static CURRENT_ITEM: af::IdxKind);
@@ -104,7 +106,7 @@ impl<I: Interner> FulfillmentBuilder<I> {
     fn store_result(
         &mut self,
         builder: &mut ProofTreeBuilder<I>,
-        from: af::ObligationIdx,
+        from: ObligationIdx,
         result: af::ObligationResult<I>,
     ) {
         let node_idx = self.builder.obligations[from];
@@ -130,57 +132,6 @@ impl<I: Interner> FulfillmentBuilder<I> {
             let last_res = obligation.result.last()?;
             Some(last_res.trace.leaf)
         })
-    }
-
-    /// Take the current state of the `FulfillmentBuilder` and maintain invariants
-    /// in the overall tree builder. This method needs to make sure that the Fulfillment
-    /// node is finalized and inserted into the tree, subgoals need to be added as
-    /// children to the tree, and the final tree description needs to be built.
-    fn mint_proof(
-        self,
-        builder: &mut ProofTreeBuilder<I>,
-        outcome: Option<&Fallible<Solution<I>>>,
-    ) -> TreeDescription {
-        let sol_is_unique = outcome
-            .map(|fallible| matches!(fallible, Ok(Solution::Unique(..))))
-            .unwrap_or(false);
-        let fail_is_unknown = matches!(self.builder.did_fail, af::FulfillFailKind::Unknown);
-        let exists_obligations = self.builder.has_obligations();
-        let exists_results = self.builder.has_obligation_results(&builder.nodes);
-
-        assert!(
-            // There exists a solution.
-            sol_is_unique ||
-                // There are obligations and results.
-                (exists_obligations && exists_results) ||
-                // There is a reason for failure.
-                !fail_is_unknown,
-            "Fulfillment Builders must have a failure reason {:#?}",
-            self.builder
-        );
-
-        let mut children = self.builder.obligations.iter().copied().collect::<Vec<_>>();
-
-        let leaf = if exists_results {
-            self.get_current_sink(builder).unwrap()
-        } else if exists_obligations || !fail_is_unknown {
-            let l = builder.push_node(NoSolution);
-            children.push(l);
-            l
-        } else {
-            assert!(outcome.is_some());
-            let l = builder.push_node(outcome.unwrap().clone());
-            children.push(l);
-            l
-        };
-
-        let root = builder.push_node(self.builder);
-
-        for child in children {
-            builder.relate(root, child);
-        }
-
-        builder.describe_tree(root, leaf)
     }
 }
 
@@ -395,14 +346,20 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
 
         debug!(?clause, "Using program clause");
 
+        eprintln!("CLAUSE: {clause:?}");
+
+        let pci = fulfill
+            .infer
+            .instantiate_binders_existentially(fulfill.solver.interner(), clause.clone());
+
+        eprintln!("      : {pci:?}");
+
         let ProgramClauseImplication {
             consequence,
             conditions,
             constraints,
             priority: _,
-        } = fulfill
-            .infer
-            .instantiate_binders_existentially(fulfill.solver.interner(), clause.clone());
+        } = pci;
 
         debug!(?consequence, ?conditions, ?constraints);
         fulfill
@@ -420,17 +377,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
             fulfill
                 .obligations
                 .inform_of_failure(af::FulfillFailKind::Unification);
-            return Err(fulfill
-                .obligations
-                .mint_proof(fulfill.solver.get_inspector(), None));
+            return Err(fulfill.mint_proof(None));
         }
 
         // if so, toss in all of its premises
         for condition in conditions.as_slice(fulfill.solver.interner()) {
             if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, condition.clone()) {
-                return Err(fulfill
-                    .obligations
-                    .mint_proof(fulfill.solver.get_inspector(), None));
+                return Err(fulfill.mint_proof(None));
             }
         }
 
@@ -463,9 +416,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
 
         if let Err(_e) = fulfill.push_goal(&canonical_goal.environment, canonical_goal.goal.clone())
         {
-            return Err(fulfill
-                .obligations
-                .mint_proof(fulfill.solver.get_inspector(), None));
+            return Err(fulfill.mint_proof(None));
         }
 
         Ok(fulfill)
@@ -746,13 +697,17 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         universes: UniverseMap,
         subst: Canonical<ConstrainedSubst<I>>,
     ) {
-        // TODO(gavinleroy): we need to capture the application
+        debug!("APPLYING SOLUTION:\n    {free_vars:?}\n    {subst:?}");
 
         use chalk_solve::infer::ucanonicalize::UniverseMapExt;
         let subst = universes.map_from_canonical(self.interner(), &subst);
-        let ConstrainedSubst { subst, constraints } = self
+        let sbst = self
             .infer
             .instantiate_canonical(self.solver.interner(), subst);
+
+        debug!("CanonicalSubst {sbst:?}");
+
+        let ConstrainedSubst { subst, constraints } = sbst;
 
         debug!(
             "fulfill::apply_solution: adding constraints {:?}",
@@ -888,7 +843,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
                 let value = $solution;
                 self.obligations.builder.set_result(value.clone());
                 let inspector = self.solver.get_inspector();
-                let descr = self.obligations.mint_proof(inspector, Some(&value));
+                let descr = self.mint_proof(Some(&value));
                 debug!(?value, "Final answer from solving");
                 return TracedFallible::from_built(value, descr);
             }};
@@ -922,7 +877,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
                 &mut self.infer,
                 self.solver.interner(),
                 ConstrainedSubst {
-                    subst: self.subst,
+                    subst: self.subst.clone(),
                     constraints,
                 },
             );
@@ -1004,6 +959,60 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
 
     fn interner(&self) -> I {
         self.solver.interner()
+    }
+
+    /// Take the current state of the `FulfillmentBuilder` and maintain invariants
+    /// in the overall tree builder. This method needs to make sure that the Fulfillment
+    /// node is finalized and inserted into the tree, subgoals need to be added as
+    /// children to the tree, and the final tree description needs to be built.
+    fn mint_proof(self, outcome: Option<&Fallible<Solution<I>>>) -> TreeDescription {
+        let builder = self.solver.get_inspector();
+        let mut this = self.obligations;
+
+        // XXX: The state of the table and subst change during fulfillment, update them here.
+        this.builder.update_table(self.infer);
+        this.builder.subst = self.subst;
+
+        let sol_is_unique = outcome
+            .map(|fallible| matches!(fallible, Ok(Solution::Unique(..))))
+            .unwrap_or(false);
+        let fail_is_unknown = matches!(this.builder.did_fail, af::FulfillFailKind::Unknown);
+        let exists_obligations = this.builder.has_obligations();
+        let exists_results = this.builder.has_obligation_results(&builder.nodes);
+
+        assert!(
+            // There exists a solution.
+            sol_is_unique ||
+                // There are obligations and results.
+                (exists_obligations && exists_results) ||
+                // There is a reason for failure.
+                !fail_is_unknown,
+            "Fulfillment Builders must have a failure reason {:#?}",
+            this.builder
+        );
+
+        let mut children = this.builder.obligations.iter().copied().collect::<Vec<_>>();
+
+        let leaf = if exists_results {
+            this.get_current_sink(builder).unwrap()
+        } else if exists_obligations || !fail_is_unknown {
+            let l = builder.push_node(NoSolution);
+            children.push(l);
+            l
+        } else {
+            assert!(outcome.is_some());
+            let l = builder.push_node(outcome.unwrap().clone());
+            children.push(l);
+            l
+        };
+
+        let root = builder.push_node(this.builder);
+
+        for child in children {
+            builder.relate(root, child);
+        }
+
+        builder.describe_tree(root, leaf)
     }
 }
 

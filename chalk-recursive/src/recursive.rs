@@ -8,7 +8,7 @@ use chalk_ir::{Canonical, ConstrainedSubst, Goal, InEnvironment, UCanonical};
 use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase, Solution};
 use std::fmt;
 
-use argus::proof_tree::{flat::ProofNodeIdx, ProofNode, TracedFallible, TreeDescription};
+use argus::proof_tree::{indices::ProofNodeIdx, ProofNode, TracedFallible, TreeDescription};
 
 /// A Solver is the basic context in which you can propose goals for a given
 /// program. **All questions posed to the solver are in canonical, closed form,
