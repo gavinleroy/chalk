@@ -71,6 +71,7 @@ impl<I: Interner> FulfillmentBuilder<I> {
     /// `ProofTreeBuilder`, and `FulfillmentBuilder`.
     fn push_obligation(
         &mut self,
+        interner: I,
         builder: &mut ProofTreeBuilder<I>,
         obligation: Obligation<I>,
         infer: &InferenceTable<I>,
@@ -82,8 +83,9 @@ impl<I: Interner> FulfillmentBuilder<I> {
             Obligation::Refute(env_goal) => (af::ObligationKind::Refute, env_goal),
         };
 
+        let canonicalized = ucanonicalize(infer.clone(), interner, goal);
         // Push the argus obligation into the global node buffer, obtaining its index.
-        let obl = builder.push_node(af::Obligation::new(goal, infer, subst, kind));
+        let obl = builder.push_node(af::Obligation::new(&canonicalized, infer, subst, kind));
 
         CURRENT_ITEM.get(|idx_opt| {
             let from = idx_opt.copied().unwrap_or(af::IdxKind::CurrentRoot);
@@ -267,6 +269,21 @@ where
     (res.quantified, res.universes)
 }
 
+fn ucanonicalize<I: Interner, T>(
+    // HACK to avoid messing with the environment
+    mut infer: InferenceTable<I>,
+    interner: I,
+    value0: &T,
+) -> UCanonical<T>
+where
+    T: Clone + HasInterner<Interner = I> + TypeFoldable<I> + TypeVisitable<I>,
+    T: HasInterner<Interner = I>,
+{
+    let (quantified, free_vars) = canonicalize(&mut infer, interner, value0.clone());
+    let (quantified, universes) = u_canonicalize(&mut infer, interner, &quantified);
+    quantified
+}
+
 fn unify<I: Interner, T>(
     infer: &mut InferenceTable<I>,
     interner: I,
@@ -325,13 +342,14 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         canonical_goal: InEnvironment<DomainGoal<I>>,
         clause: &Binders<ProgramClauseImplication<I>>,
     ) -> TracedCreate<Self> {
+        let canonicalized_goal = ucanonicalize(infer.clone(), solver.interner(), &canonical_goal);
         let mut fulfill = Fulfill {
             solver,
             infer: infer.clone(),
             subst: subst.clone(),
             obligations: FulfillmentBuilder::new(
                 FulfillmentKind::WithClause {
-                    goal: canonical_goal.clone(),
+                    goal: canonicalized_goal,
                     clause: clause.clone(),
                 },
                 infer,
@@ -346,13 +364,9 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
 
         debug!(?clause, "Using program clause");
 
-        eprintln!("CLAUSE: {clause:?}");
-
         let pci = fulfill
             .infer
             .instantiate_binders_existentially(fulfill.solver.interner(), clause.clone());
-
-        eprintln!("      : {pci:?}");
 
         let ProgramClauseImplication {
             consequence,
@@ -396,13 +410,14 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         subst: Substitution<I>,
         canonical_goal: InEnvironment<Goal<I>>,
     ) -> TracedCreate<Self> {
+        let canonicalized_goal = ucanonicalize(infer.clone(), solver.interner(), &canonical_goal);
         let mut fulfill = Fulfill {
             solver,
             infer: infer.clone(),
             subst: subst.clone(),
             obligations: FulfillmentBuilder::new(
                 FulfillmentKind::WithSimplification {
-                    goal: canonical_goal.clone(),
+                    goal: canonicalized_goal,
                 },
                 infer,
                 subst,
@@ -456,6 +471,7 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         };
 
         self.obligations.push_obligation(
+            self.solver.interner(),
             self.solver.get_inspector(),
             obligation,
             &self.infer,
