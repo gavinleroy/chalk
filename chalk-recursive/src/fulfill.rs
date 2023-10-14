@@ -986,8 +986,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         let mut this = self.obligations;
 
         // XXX: The state of the table and subst change during fulfillment, update them here.
-        this.builder.update_table(self.infer);
-        this.builder.subst = self.subst;
+        // this.builder.update_table(self.infer);
+        // this.builder.subst = self.subst;
 
         let sol_is_unique = outcome
             .map(|fallible| matches!(fallible, Ok(Solution::Unique(..))))
