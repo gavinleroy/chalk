@@ -121,8 +121,11 @@ impl<'me, I: Interner> SolveDatabase<I> for Solver<'me, I> {
         minimums: &mut Minimums,
         should_continue: impl std::ops::Fn() -> bool + Clone,
     ) -> TracedFallible<I> {
-        self.context
-            .solve_goal(&goal, minimums, self.program, should_continue)
+        let res = self
+            .context
+            .solve_goal(&goal, minimums, self.program, should_continue);
+        tracing::debug!("Returning {:?}", res);
+        res
     }
 
     fn interner(&self) -> I {

@@ -223,7 +223,7 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<
 
         // --> for program_clause in clauses {
         for (clause_idx, program_clause) in clauses_enumerated {
-            debug_span!("solve_from_clauses", clause = ?program_clause);
+            debug_span!("solve_from_clauses", index = ?clause_idx, clause = ?program_clause);
 
             let ProgramClauseData(implication) = program_clause.data(self.interner());
             let infer = infer.clone();
@@ -294,6 +294,8 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<
          * isn't the case :(
          */
 
+        debug!("Inserting solution into tree");
+
         let inspector = self.get_inspector();
 
         builder.set_outcome(solution.clone());
@@ -310,6 +312,8 @@ trait SolveIterationHelpers<'a, I: Interner + 'a>: SolveDatabase<I> + IsTracing<
         for child in children {
             inspector.relate(root, child);
         }
+
+        debug!("Returning solution {:?}", solution);
 
         inspector.traced_result(solution, root, sol)
     }

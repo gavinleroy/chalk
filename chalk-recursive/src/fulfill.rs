@@ -619,13 +619,13 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         let (quantified, free_vars) = canonicalize(&mut self.infer, interner, wc);
         let (quantified, universes) = u_canonicalize(&mut self.infer, interner, &quantified);
 
-        debug!(?quantified, "After UCanonical");
-
         let TracedFallible {
             solution, trace, ..
         } = self
             .solver
             .solve_goal(quantified, minimums, should_continue);
+
+        debug!("Done proving {:?}", solution);
 
         let sol = solution.map(|solution| PositiveSolution {
             free_vars,
@@ -678,6 +678,8 @@ impl<'s, I: Interner, Solver: SolveDatabase<I> + IsTracing<I>> Fulfill<'s, I, So
         } = self
             .solver
             .solve_goal(quantified, &mut minimums, should_continue);
+
+        debug!("Done negating {:?}", solution);
 
         let sol = if let Ok(solution) = solution {
             if solution.is_unique() {

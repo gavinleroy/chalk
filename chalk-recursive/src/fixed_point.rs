@@ -121,7 +121,14 @@ where
         assert!(self.stack.is_empty());
 
         let minimums = &mut Minimums::new();
-        self.solve_goal(canonical_goal, minimums, solver_stuff, should_continue)
+        let res = self.solve_goal(canonical_goal, minimums, solver_stuff, should_continue);
+
+        debug!(
+            "solve_root_goal(canonical_goal={:?}) -> {:?}",
+            canonical_goal, res
+        );
+
+        res
     }
 
     /// Attempt to solve a goal that has been fully broken down into leaf form

@@ -73,6 +73,8 @@ impl<'t, I: Interner> Unifier<'t, I> {
     where
         T: ?Sized + Zip<I>,
     {
+        debug_span!("relate", ?a, ?b);
+
         Zip::zip_with(&mut self, variance, a, b)?;
         let interner = self.interner();
         let mut goals = self.goals;
@@ -97,6 +99,7 @@ impl<'t, I: Interner> Unifier<'t, I> {
     /// Relate `a`, `b` with the variance such that if `variance = Covariant`, `a` is
     /// a subtype of `b`.
     fn relate_ty_ty(&mut self, variance: Variance, a: &Ty<I>, b: &Ty<I>) -> Fallible<()> {
+        debug_span!("relate_ty_ty", ?a, ?b);
         let interner = self.interner;
 
         let n_a = self.table.normalize_ty_shallow(interner, a);
@@ -358,6 +361,8 @@ impl<'t, I: Interner> Unifier<'t, I> {
     /// Unify two inference variables
     #[instrument(level = "debug", skip(self))]
     fn unify_var_var(&mut self, a: InferenceVar, b: InferenceVar) -> Fallible<()> {
+        debug_span!("unify_var_var", ?a, ?b);
+
         let var1 = EnaVariable::from(a);
         let var2 = EnaVariable::from(b);
         self.table
@@ -400,6 +405,7 @@ impl<'t, I: Interner> Unifier<'t, I> {
         T: Clone + TypeFoldable<I> + HasInterner<Interner = I> + Zip<I>,
         't: 'a,
     {
+        debug_span!("relate_binders", ?a, ?b);
         // for<'a...> T == for<'b...> U
         //
         // if:
@@ -457,6 +463,7 @@ impl<'t, I: Interner> Unifier<'t, I> {
         alias: &AliasTy<I>,
         ty: &Ty<I>,
     ) -> Fallible<()> {
+        debug_span!("relate_alias", ?alias, ?ty);
         let interner = self.interner;
         match variance {
             Variance::Invariant => {
